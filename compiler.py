@@ -22,12 +22,10 @@ class Compiler:
     def rco_stmt(self, s: stmt) -> List[stmt]:
         # YOUR CODE HERE
         pass
-        
 
     def remove_complex_operands(self, p: Module) -> Module:
         # YOUR CODE HERE
         pass
-        
 
     ############################################################################
     # Select Instructions
@@ -35,15 +33,15 @@ class Compiler:
 
     def select_arg(self, e: expr) -> arg:
         # YOUR CODE HERE
-        pass        
+        pass
 
     def select_stmt(self, s: stmt) -> List[instr]:
         # YOUR CODE HERE
-        pass        
+        pass
 
     # def select_instructions(self, p: Module) -> X86Program:
     #     # YOUR CODE HERE
-    #     pass        
+    #     pass
 
     ############################################################################
     # Assign Homes
@@ -51,21 +49,21 @@ class Compiler:
 
     def assign_homes_arg(self, a: arg, home: Dict[Variable, arg]) -> arg:
         # YOUR CODE HERE
-        pass        
+        pass
 
-    def assign_homes_instr(self, i: instr,
-                           home: Dict[Variable, arg]) -> instr:
+    def assign_homes_instr(self, i: instr, home: Dict[Variable, arg]) -> instr:
         # YOUR CODE HERE
-        pass        
+        pass
 
-    def assign_homes_instrs(self, ss: List[instr],
-                            home: Dict[Variable, arg]) -> List[instr]:
+    def assign_homes_instrs(
+        self, ss: List[instr], home: Dict[Variable, arg]
+    ) -> List[instr]:
         # YOUR CODE HERE
-        pass        
+        pass
 
     # def assign_homes(self, p: X86Program) -> X86Program:
     #     # YOUR CODE HERE
-    #     pass        
+    #     pass
 
     ############################################################################
     # Patch Instructions
@@ -73,15 +71,15 @@ class Compiler:
 
     def patch_instr(self, i: instr) -> List[instr]:
         # YOUR CODE HERE
-        pass        
+        pass
 
     def patch_instrs(self, ss: List[instr]) -> List[instr]:
         # YOUR CODE HERE
-        pass        
+        pass
 
     # def patch_instructions(self, p: X86Program) -> X86Program:
     #     # YOUR CODE HERE
-    #     pass        
+    #     pass
 
     ############################################################################
     # Prelude & Conclusion
@@ -89,5 +87,4 @@ class Compiler:
 
     # def prelude_and_conclusion(self, p: X86Program) -> X86Program:
     #     # YOUR CODE HERE
-    #     pass        
-
+    #     pass
