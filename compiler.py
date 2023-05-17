@@ -22,7 +22,7 @@ class Compiler:
                 return (e, [])
             case Call(Name("input_int"), []):
                 i = Name(generate_name("input"))
-                return (i, [(i, Constant(input_int()))])
+                return (i, [(i, Call(Name("input_int"), []))])
             case UnaryOp(USub(), v):
                 tmp = Name(generate_name("tmp"))
                 (v_exp, v_temp) = self.rco_exp(v, True)
