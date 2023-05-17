@@ -27,7 +27,7 @@ class Compiler:
                 tmp = Name(generate_name("tmp"))
                 (v_exp, v_temp) = self.rco_exp(v, True)
 
-                return (tmp, [*v_temp, (tmp, v_exp)])
+                return (tmp, [*v_temp, (tmp, UnaryOp(USub(), v_exp))])
             case BinOp(a, Add(), b):
                 (a_exp, a_temp) = self.rco_exp(a, True)
                 (b_exp, b_temp) = self.rco_exp(b, True)
@@ -69,7 +69,6 @@ class Compiler:
 
         Pass: L_{Var} -> L_{Var}^{mon}
         """
-        print(p)
         match p:
             case Module(body):
                 return Module([s for stmt in body for s in self.rco_stmt(stmt)])
