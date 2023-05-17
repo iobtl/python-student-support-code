@@ -16,9 +16,9 @@ typecheck_dict = {
 interpLvar = interp_Lvar.InterpLvar().interp
 interp_dict = {
     "remove_complex_operands": interpLvar,
-    "select_instructions": interp_x86,
-    "assign_homes": interp_x86,
-    "patch_instructions": interp_x86,
+    # "select_instructions": interp_x86,
+    # "assign_homes": interp_x86,
+    # "patch_instructions": interp_x86,
 }
 
 if False:

@@ -28,11 +28,28 @@ class InterpLvar(InterpLint):
 
 
 if __name__ == "__main__":
-    eight = Constant(8)
-    neg_eight = UnaryOp(USub(), eight)
-    read = Call(Name("input_int"), [])
-    ast1_1 = BinOp(read, Add(), neg_eight)
-    pr = Expr(Call(Name("print"), [ast1_1]))
-    p = Module([pr])
+    # eight = Constant(8)
+    # neg_eight = UnaryOp(USub(), eight)
+    # read = Call(Name("input_int"), [])
+    # ast1_1 = BinOp(read, Add(), neg_eight)
+    # pr = Expr(Call(Name("print"), [ast1_1]))
+    # p = Module([pr])
+    # interp = InterpLvar()
+    # interp.interp_Lvar(p)
+
+    c1 = Constant(42)
+    c2 = Constant(10)
+    c3 = UnaryOp(USub(), c2)
+    c4 = BinOp(c1, Add(), c3)
+    x = Assign([Name("x")], c4)
+    pr = Expr(Call(Name("print"), [BinOp(Name("x"), Add(), c2)]))
+    p = Module([x, pr])
+    print(repr(p))
+
     interp = InterpLvar()
-    interp.interp_Lvar(p)
+    interp.interp(p)
+
+    from compiler import Compiler
+
+    c = Compiler()
+    print(c.remove_complex_operands(p))

@@ -1302,7 +1302,7 @@ def label_name(n: str) -> str:
         return n
 
 
-tracing = False
+tracing = True
 
 
 def enable_tracing():
