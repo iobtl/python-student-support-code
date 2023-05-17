@@ -32,12 +32,22 @@ class Compiler:
                 (a_exp, a_temp) = self.rco_exp(a, True)
                 (b_exp, b_temp) = self.rco_exp(b, True)
 
-                return (BinOp(a_exp, Add(), b_exp), [*a_temp, *b_temp])
+                # Turn result of binary op into another temporary
+                if need_atomic:
+                    tmp = Name(generate_name("tmp"))
+                    return (tmp, [*a_temp, *b_temp, (tmp, BinOp(a_exp, Add(), b_exp))])
+                else:
+                    return (BinOp(a_exp, Add(), b_exp), [*a_temp, *b_temp])
             case BinOp(a, Sub(), b):
                 (a_exp, a_temp) = self.rco_exp(a, True)
                 (b_exp, b_temp) = self.rco_exp(b, True)
 
-                return (BinOp(a_exp, Sub(), b_exp), [*a_temp, *b_temp])
+                # Turn result of binary op into another temporary
+                if need_atomic:
+                    tmp = Name(generate_name("tmp"))
+                    return (tmp, [*a_temp, *b_temp, (tmp, BinOp(a_exp, Sub(), b_exp))])
+                else:
+                    return (BinOp(a_exp, Sub(), b_exp), [*a_temp, *b_temp])
             case _:
                 raise Exception("Unsupported expression: ", e)
 
@@ -50,7 +60,7 @@ class Compiler:
 
                 return stmts
             case Expr(exp):
-                (e, e_temp) = self.rco_exp(exp, True)
+                (e, e_temp) = self.rco_exp(exp, False)
                 stmts = [Assign([name], value) for name, value in e_temp]
                 stmts.append(Expr(e))
 
