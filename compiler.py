@@ -165,8 +165,8 @@ class Compiler:
                     arg = Deref("rbp", -8 * (len(home) + 1))
                     home[a] = arg
                     return arg
-            case e:
-                return e
+            case _:
+                return a
 
     def assign_homes_instr(self, i: instr, home: dict[Variable, arg]) -> instr:
         match i:
@@ -193,16 +193,28 @@ class Compiler:
     ############################################################################
 
     def patch_instr(self, i: instr) -> list[instr]:
-        # YOUR CODE HERE
-        pass
+        match i:
+            case Instr(op, [arg1, arg2]):
+                need_patch = False
+                match (arg1, arg2):
+                    case (Deref(_, _), Deref(_, _)):
+                        need_patch = True
+                    case (Immediate(v), Deref(_, _)) if v > 2**16:
+                        need_patch = True
+
+                return (
+                    [Instr("movq", [arg1, Reg("rax")]), Instr(op, [Reg("rax"), arg2])]
+                    if need_patch
+                    else [i]
+                )
+            case _:
+                return [i]
 
     def patch_instrs(self, ss: list[instr]) -> list[instr]:
-        # YOUR CODE HERE
-        pass
+        return [i for instr in ss for i in self.patch_instr(instr)]
 
     def patch_instructions(self, p: X86Program) -> X86Program:
-        # YOUR CODE HERE
-        pass
+        return X86Program(self.patch_instrs(p.body))
 
     ############################################################################
     # Prelude & Conclusion
