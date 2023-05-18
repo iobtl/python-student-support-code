@@ -63,7 +63,7 @@ class Compiler:
 
                 return stmts
             case Expr(exp):
-                (e, e_temp) = self.rco_exp(exp, False)
+                (e, e_temp) = self.rco_exp(exp, True)
                 stmts = [Assign([name], value) for name, value in e_temp]
                 stmts.append(Expr(e))
 
@@ -108,31 +108,7 @@ class Compiler:
                     Instr("movq", [self.select_arg(atm), Reg("rdi")]),
                     Callq(label_name("print_int"), 1),
                 ]
-            case Expr(exp):
-                match exp:
-                    case Call(Name("input_int"), []):
-                        return [Callq(label_name("read_int"), 0)]
-                    case UnaryOp(USub(), atm):
-                        return [Instr("negq", [self.select_arg(atm)])]
-                    case BinOp(a, op, b):
-                        if str(op) == "+":
-                            op_instr = "addq"
-                        elif str(op) == "-":
-                            op_instr = "subq"
-                        else:
-                            raise Exception("Unsupported binary op in assign: ", s)
-
-                        a_arg, b_arg = self.select_arg(a), self.select_arg(b)
-                        return [
-                            Instr("movq", [a_arg, Reg("rax")]),
-                            Instr(op_instr, [b_arg, Reg("rax")]),
-                        ]
-                    case e:
-                        return [Instr("movq", [self.select_arg(e), Reg("rax")])]
-            case Assign([Name(var)], BinOp(atm_a, op, atm_b)) if str(
-                atm_a
-            ) == var or str(atm_b) == var:
-                # Handle special case  when `a` or `b` is `var`
+            case Assign([Name(var)], BinOp(atm_a, op, atm_b)):
                 if str(op) == "+":
                     op_instr = "addq"
                 elif str(op) == "-":
@@ -143,16 +119,26 @@ class Compiler:
                 a_arg, b_arg = self.select_arg(atm_a), self.select_arg(atm_b)
                 if str(a_arg) == var:
                     return [Instr(op_instr, [b_arg, Variable(var)])]
-                else:
+                elif str(b_arg) == var:
                     return [Instr(op_instr, [a_arg, Variable(var)])]
+                else:
+                    return [
+                        Instr("movq", [a_arg, Variable(var)]),
+                        Instr(op_instr, [b_arg, Variable(var)]),
+                    ]
+
             case Assign([Name(var)], UnaryOp(USub(), atm)):
                 return [
                     Instr("movq", [self.select_arg(atm), Variable(var)]),
                     Instr("negq", [Variable(var)]),
                 ]
-            case Assign([Name(var)], expr):
-                expr_instr = self.select_stmt(Expr(expr))
-                return [*expr_instr, Instr("movq", [Reg("rax"), Variable(var)])]
+            case Assign([Name(var)], Call(Name("input_int"), [])):
+                return [
+                    Callq(label_name("read_int"), 0),
+                    Instr("movq", [Reg("rax"), Variable(var)]),
+                ]
+            case Assign([Name(var)], atm_exp):
+                return [Instr("movq", [self.select_arg(atm_exp), Variable(var)])]
 
     def select_instructions(self, p: Module) -> X86Program:
         match p:
@@ -168,22 +154,39 @@ class Compiler:
     ############################################################################
 
     def assign_homes_arg(self, a: arg, home: dict[Variable, arg]) -> arg:
-        # YOUR CODE HERE
-        pass
+        match a:
+            # The only case we care about
+            case Variable(_):
+                home_arg = home.get(a)
+
+                if home_arg:
+                    return home_arg
+                else:
+                    arg = Deref("rbp", -8 * (len(home) + 1))
+                    home[a] = arg
+                    return arg
+            case e:
+                return e
 
     def assign_homes_instr(self, i: instr, home: dict[Variable, arg]) -> instr:
-        # YOUR CODE HERE
-        pass
+        match i:
+            case Instr(op, args):
+                return Instr(op, [self.assign_homes_arg(arg, home) for arg in args])
+            case Callq(_, _) | Jump():
+                return i
 
     def assign_homes_instrs(
         self, ss: list[instr], home: dict[Variable, arg]
     ) -> list[instr]:
-        # YOUR CODE HERE
-        pass
+        return [self.assign_homes_instr(instr, home) for instr in ss]
 
     def assign_homes(self, p: X86Program) -> X86Program:
-        # YOUR CODE HERE
-        pass
+        home = {}
+        assigned = self.assign_homes_instrs(p.body, home)
+        num_vars = len(home)
+        frame_size = (num_vars + 1) * 8 if num_vars % 2 != 0 else num_vars * 8
+
+        return X86Program(assigned, frame_size)
 
     ############################################################################
     # Patch Instructions

@@ -10,11 +10,12 @@ from utils import dedent, indent, indent_stmt, label_name
 @dataclass
 class X86Program:
     body: dict[str, list[instr]] | list[instr]
+    frame_size: int = 0
 
     def __str__(self):
         result = ""
         if isinstance(self.body, dict):
-            for (l, ss) in self.body.items():
+            for l, ss in self.body.items():
                 if l == label_name("main"):
                     result += "\t.globl " + label_name("main") + "\n"
                 result += "\t.align 16\n"
