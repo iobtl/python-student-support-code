@@ -221,5 +221,14 @@ class Compiler:
     ############################################################################
 
     def prelude_and_conclusion(self, p: X86Program) -> X86Program:
-        # YOUR CODE HERE
-        pass
+        return X86Program(
+            [
+                Instr("pushq", [Reg("rbp")]),
+                Instr("movq", [Reg("rsp"), Reg("rbp")]),
+                Instr("subq", [Immediate(p.frame_size), Reg("rsp")]),
+                *p.body,
+                Instr("addq", [Immediate(p.frame_size), Reg("rsp")]),
+                Instr("popq", [Reg("rbp")]),
+                Instr("retq", []),
+            ]
+        )
