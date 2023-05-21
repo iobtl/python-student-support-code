@@ -83,7 +83,7 @@ class Compiler(compiler.Compiler):
             l_before = l_after.difference(self.write_vars(instr)).union(
                 self.read_vars(instr)
             )
-            mapping[i + 1] = l_after
+            mapping[instr] = l_after
 
         return mapping
 
@@ -94,8 +94,20 @@ class Compiler(compiler.Compiler):
     def build_interference(
         self, p: X86Program, live_after: dict[instr, Set[location]]
     ) -> UndirectedAdjList:
-        # YOUR CODE HERE
-        pass
+        i_graph = UndirectedAdjList()
+        for instr in p.body:
+            match instr:
+                case Instr("movq", [arg1, arg2]):
+                    for v in live_after.get(instr, []):
+                        if v != arg1 and v != arg2:
+                            i_graph.add_edge(arg2, v)
+                case _:
+                    for d in self.write_vars(instr):
+                        for v in live_after.get(instr, []):
+                            if d != v:
+                                i_graph.add_edge(d, v)
+
+        return i_graph
 
     ############################################################################
     # Allocate Registers
@@ -155,14 +167,19 @@ print(z + (-y))
 
     p = parse(prog)
     c = Compiler()
+
     p = c.remove_complex_operands(p)
     print("=====RCO=====")
     pp.pprint(p)
+
     p = c.select_instructions(p)
-
-    a = c.uncover_live(p)
-
     print("=====Instruction Selection=====")
     pp.pprint(p)
+
+    a = c.uncover_live(p)
     print("=====Liveness Analysis=====")
     pp.pprint(a)
+
+    ig = c.build_interference(p, a)
+    print("=====Interference Graph=====")
+    ig.show().render(view=True)
