@@ -24,7 +24,7 @@ class Compiler:
                 i = Name(generate_name("input"))
                 return (i, [(i, Call(Name("input_int"), []))])
             case UnaryOp(USub(), v):
-                (v_exp, v_temp) = self.rco_exp(v, need_atomic)
+                (v_exp, v_temp) = self.rco_exp(v, True)
 
                 if need_atomic:
                     tmp = Name(generate_name("tmp"))
@@ -32,8 +32,8 @@ class Compiler:
                 else:
                     return (UnaryOp(USub(), v_exp), v_temp)
             case BinOp(a, Add(), b):
-                (a_exp, a_temp) = self.rco_exp(a, need_atomic)
-                (b_exp, b_temp) = self.rco_exp(b, need_atomic)
+                (a_exp, a_temp) = self.rco_exp(a, True)
+                (b_exp, b_temp) = self.rco_exp(b, True)
 
                 # Turn result of binary op into another temporary
                 if need_atomic:
@@ -42,8 +42,8 @@ class Compiler:
                 else:
                     return (BinOp(a_exp, Add(), b_exp), [*a_temp, *b_temp])
             case BinOp(a, Sub(), b):
-                (a_exp, a_temp) = self.rco_exp(a, need_atomic)
-                (b_exp, b_temp) = self.rco_exp(b, need_atomic)
+                (a_exp, a_temp) = self.rco_exp(a, True)
+                (b_exp, b_temp) = self.rco_exp(b, True)
 
                 # Turn result of binary op into another temporary
                 if need_atomic:
@@ -63,13 +63,13 @@ class Compiler:
 
                 return stmts
             case Expr(exp):
-                (e, e_temp) = self.rco_exp(exp, True)
+                (e, e_temp) = self.rco_exp(exp, False)
                 stmts = [Assign([name], value) for name, value in e_temp]
                 stmts.append(Expr(e))
 
                 return stmts
             case Assign([Name(var)], exp):
-                (e, e_temp) = self.rco_exp(exp, True)
+                (e, e_temp) = self.rco_exp(exp, False)
                 stmts = [Assign([name], value) for name, value in e_temp]
                 stmts.append(Assign([Name(var)], e))
 
