@@ -37,6 +37,20 @@ FUNCTION_REG = [
     Reg("r9"),
 ]
 
+ALLOCATION = {
+    0: Reg("rcx"),
+    1: Reg("rdx"),
+    2: Reg("rsi"),
+    3: Reg("rdi"),
+    4: Reg("r8"),
+    5: Reg("r9"),
+    6: Reg("r10"),
+    7: Reg("rbx"),
+    8: Reg("r12"),
+    9: Reg("r13"),
+    10: Reg("r14"),
+}
+
 
 class Compiler(compiler.Compiler):
     ###########################################################################
@@ -117,20 +131,58 @@ class Compiler(compiler.Compiler):
     def color_graph(
         self, graph: UndirectedAdjList, variables: Set[location]
     ) -> tuple[dict[location, int], Set[location]]:
-        # YOUR CODE HERE
-        pass
+        vertices = set(graph.vertices())
+        saturations = {i: set() for i in vertices}
+        reg_ints = {i for i in range(12)}
+        allocations = {}
+        spilled = set()
+
+        while len(vertices) > 0:
+            highest_saturation = {}
+            highest_saturation_vertex = 0
+            num_highest_saturations = -1
+
+            for v in vertices:
+                num_saturations = len(saturations[v])
+                if num_saturations > num_highest_saturations:
+                    num_highest_saturations = num_highest_saturations
+                    highest_saturation = saturations[v]
+                    highest_saturation_vertex = v
+
+            available_regs = reg_ints.difference(highest_saturation)
+            if len(available_regs) == 0:
+                spilled.add(highest_saturation_vertex)
+            else:
+                reg_alloc = min(available_regs)
+                allocations[highest_saturation_vertex] = reg_alloc
+                # Update saturations of adjacent nodes
+                for adj in graph.adjacent(highest_saturation_vertex):
+                    saturations[adj].add(reg_alloc)
+
+            vertices.remove(highest_saturation_vertex)
+
+        return (allocations, spilled)
 
     def allocate_registers(self, p: X86Program, graph: UndirectedAdjList) -> X86Program:
-        # YOUR CODE HERE
-        pass
+        (colored, spilled) = self.color_graph(graph, set())
+
+        # Map first k colors to the k registers and the remaining to the stack
+        variable_reg_alloc = {v: ALLOCATION[i] for v, i in colored.items()}
+        new_instrs = self.assign_homes_instrs(p.body, variable_reg_alloc)
+        num_vars = len(graph.vertices())
+        frame_size = (num_vars + 1) * 8 if num_vars % 2 != 0 else num_vars * 8
+
+        return X86Program(new_instrs, frame_size)
 
     ############################################################################
     # assign Homes
     ############################################################################
 
     def assign_homes(self, pseudo_x86: X86Program) -> X86Program:
-        # YOUR CODE HERE
-        pass
+        live_after = self.uncover_live(pseudo_x86)
+        ig = self.build_interference(pseudo_x86, live_after)
+
+        return self.allocate_registers(pseudo_x86, ig)
 
     ###########################################################################
     # Patch Instructions
@@ -182,4 +234,12 @@ print(z + (-y))
 
     ig = c.build_interference(p, a)
     print("=====Interference Graph=====")
-    ig.show().render(view=True)
+    # ig.show().render(view=True)
+
+    (colored, _) = c.color_graph(ig, set())
+    print("=====Graph Coloring=====")
+    pp.pprint(colored)
+
+    alloc = c.allocate_registers(p, ig)
+    print("=====Register Allocation=====")
+    pp.pprint(alloc)
