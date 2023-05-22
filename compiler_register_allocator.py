@@ -133,7 +133,7 @@ class Compiler(compiler.Compiler):
     ) -> tuple[dict[location, int], Set[location]]:
         vertices = set(graph.vertices())
         saturations = {i: set() for i in vertices}
-        reg_ints = {i for i in range(12)}
+        reg_ints = {i for i in range(len(ALLOCATION))}
         allocations = {}
         spilled = set()
 
@@ -169,7 +169,29 @@ class Compiler(compiler.Compiler):
 
         # Map first k colors to the k registers and the remaining to the stack
         variable_reg_alloc = {v: ALLOCATION[i] for v, i in colored.items()}
-        new_instrs = self.assign_homes_instrs(p.body, variable_reg_alloc)
+        # TODO: Spilled vars that don't interfere with each other can be allocated same stack
+        # position?
+        for i, spilled_var in enumerate(spilled):
+            variable_reg_alloc[spilled_var] = Deref("rbp", (i + 1) * 8)
+
+        new_instrs = []
+        for instr in p.body:
+            match instr:
+                case Instr(op, args):
+                    new_instrs.append(
+                        Instr(
+                            op,
+                            [
+                                variable_reg_alloc[arg]
+                                if isinstance(arg, Variable)
+                                else arg
+                                for arg in args
+                            ],
+                        )
+                    )
+                case _:
+                    new_instrs.append(instr)
+
         num_vars = len(graph.vertices())
         frame_size = (num_vars + 1) * 8 if num_vars % 2 != 0 else num_vars * 8
 
