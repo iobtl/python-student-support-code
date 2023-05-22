@@ -212,8 +212,19 @@ class Compiler(compiler.Compiler):
     ###########################################################################
 
     def patch_instructions(self, p: X86Program) -> X86Program:
-        # YOUR CODE HERE
-        pass
+        """Ensures at most one argument is memory access and remove trivial moves."""
+
+        def instr_duplicated(i: instr):
+            match i:
+                case Instr(_, [arg1, arg2]):
+                    return arg1 == arg2
+                case _:
+                    return False
+
+        new_instrs = self.patch_instrs(p.body)
+        new_instrs = [instr for instr in new_instrs if not instr_duplicated(instr)]
+
+        return X86Program(new_instrs, p.frame_size)
 
     ###########################################################################
     # Prelude & Conclusion
@@ -266,3 +277,7 @@ print(z + (-y))
     alloc = c.allocate_registers(p, ig)
     print("=====Register Allocation=====")
     pp.pprint(alloc)
+
+    patched = c.patch_instructions(alloc)
+    print("=====Patch Instructions=====")
+    pp.pprint(patched)
