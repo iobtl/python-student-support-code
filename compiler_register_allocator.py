@@ -143,10 +143,11 @@ class Compiler(compiler.Compiler):
             num_highest_saturations = -1
 
             for v in vertices:
-                num_saturations = len(saturations[v])
+                v_saturations = saturations[v]
+                num_saturations = len(v_saturations)
                 if num_saturations > num_highest_saturations:
-                    num_highest_saturations = num_highest_saturations
-                    highest_saturation = saturations[v]
+                    num_highest_saturations = num_saturations
+                    highest_saturation = v_saturations
                     highest_saturation_vertex = v
 
             available_regs = reg_ints.difference(highest_saturation)
