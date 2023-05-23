@@ -2,7 +2,7 @@ import compiler
 from graph import UndirectedAdjList
 from ast import *
 from x86_ast import *
-from typing import Set
+from typing import Callable, Set
 
 # Skeleton code for the chapter on Register Allocation
 #
@@ -89,7 +89,7 @@ class Compiler(compiler.Compiler):
         # Live-after set for last instruction is empty
         l_before = self.read_vars(p.body[num_instr - 1])
         l_after = set()
-        mapping[num_instr] = l_after
+        mapping[p.body[num_instr - 1]] = l_after
 
         for i in range(num_instr - 2, -1, -1):
             instr = p.body[i]
@@ -165,6 +165,29 @@ class Compiler(compiler.Compiler):
         return (allocations, spilled)
 
     def allocate_registers(self, p: X86Program, graph: UndirectedAdjList) -> X86Program:
+        def replace_args(mapping: Callable[[arg], location]) -> X86Program:
+            new_instrs = []
+
+            for instr in p.body:
+                match instr:
+                    case Instr(op, args):
+                        new_instrs.append(
+                            Instr(
+                                op,
+                                [mapping(a) for a in args],
+                            )
+                        )
+                    case _:
+                        new_instrs.append(instr)
+            num_vars = len(graph.vertices())
+            frame_size = (num_vars + 1) * 8 if num_vars % 2 != 0 else num_vars * 8
+
+            return X86Program(new_instrs, frame_size)
+
+        if graph.num_vertices() == 0:
+            # Only one temporary
+            return replace_args(lambda a: Reg("rax") if isinstance(a, Variable) else a)
+
         (colored, spilled) = self.color_graph(graph, set())
 
         # Map first k colors to the k registers and the remaining to the stack
@@ -172,30 +195,14 @@ class Compiler(compiler.Compiler):
         # TODO: Spilled vars that don't interfere with each other can be allocated same stack
         # position?
         for i, spilled_var in enumerate(spilled):
-            variable_reg_alloc[spilled_var] = Deref("rbp", (i + 1) * 8)
+            variable_reg_alloc[spilled_var] = Deref("rbp", -(i + 1) * 8)
 
-        new_instrs = []
-        for instr in p.body:
-            match instr:
-                case Instr(op, args):
-                    new_instrs.append(
-                        Instr(
-                            op,
-                            [
-                                variable_reg_alloc[arg]
-                                if isinstance(arg, Variable)
-                                else arg
-                                for arg in args
-                            ],
-                        )
-                    )
-                case _:
-                    new_instrs.append(instr)
-
-        num_vars = len(graph.vertices())
-        frame_size = (num_vars + 1) * 8 if num_vars % 2 != 0 else num_vars * 8
-
-        return X86Program(new_instrs, frame_size)
+        return replace_args(
+            # TODO: verify
+            lambda a: variable_reg_alloc.get(a, Reg("rax"))
+            if isinstance(a, Variable)
+            else a
+        )
 
     ############################################################################
     # assign Homes
@@ -231,8 +238,56 @@ class Compiler(compiler.Compiler):
     ###########################################################################
 
     def prelude_and_conclusion(self, p: X86Program) -> X86Program:
-        # YOUR CODE HERE
-        pass
+        def align(b: int) -> int:
+            if b % 16 == 0:
+                return b
+            else:
+                return b + 8
+
+        used_callee = set()
+        spilled_offsets = set()
+
+        # Determine which callee-saved registers were used
+        for instr in p.body:
+            match instr:
+                case Instr(_, args):
+                    for arg in args:
+                        match arg:
+                            case Reg(_):
+                                if arg in CALLEE_SAVED_REG:
+                                    used_callee.add(arg)
+                            case Deref(_, offset):
+                                spilled_offsets.add(offset)
+                            case _:
+                                continue
+
+        num_callee = len(used_callee)
+        num_spilled = len(spilled_offsets)
+        stack_sub = align(8 * num_spilled + 8 * num_callee) - 8 * num_callee
+
+        new_instrs = [
+            Instr("pushq", [Reg("rbp")]),
+            Instr("movq", [Reg("rsp"), Reg("rbp")]),
+        ]
+
+        # Save used callee-saved registers
+        # NOTE: `pushq` also subtracts from `rsp`
+        callee_reg_used = len(used_callee) > 0
+        if callee_reg_used:
+            for reg in used_callee:
+                new_instrs.append(Instr("pushq", [reg]))
+            new_instrs.append(Instr("subq", [Immediate(stack_sub), Reg("rsp")]))
+
+        new_instrs.extend(p.body)
+
+        if callee_reg_used:
+            new_instrs.append(Instr("addq", [Immediate(stack_sub), Reg("rsp")]))
+            for reg in used_callee:
+                new_instrs.append(Instr("popq", [reg]))
+        new_instrs.append(Instr("popq", [Reg("rbp")]))
+        new_instrs.append(Instr("retq", []))
+
+        return X86Program(new_instrs, p.frame_size)
 
 
 if __name__ == "__main__":
@@ -281,3 +336,7 @@ print(z + (-y))
     patched = c.patch_instructions(alloc)
     print("=====Patch Instructions=====")
     pp.pprint(patched)
+
+    final = c.prelude_and_conclusion(patched)
+    print("=====Prelude and Conclusion=====")
+    pp.pprint(final)
