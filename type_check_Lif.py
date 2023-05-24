@@ -66,3 +66,8 @@ class TypeCheckLif(TypeCheckLvar):
                     return body_t
             case _:
                 return super().type_check_stmts(ss, env)
+
+    def type_check(self, p):
+        match p:
+            case Module(body):
+                self.type_check_stmts(body, {})

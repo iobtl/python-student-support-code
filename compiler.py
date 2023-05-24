@@ -13,6 +13,47 @@ Temporaries = list[Binding]
 
 class Compiler:
     ############################################################################
+    # Shrink
+    ############################################################################
+
+    def shrink(self, p: Module) -> Module:
+        def _shrink_exp(e: expr) -> expr:
+            match e:
+                case BoolOp(And(), [e1, e2]):
+                    # e2 if e1 else False
+                    return IfExp(_shrink_exp(e1), _shrink_exp(e2), Constant(False))
+                case BoolOp(Or(), [e1, e2]):
+                    # True if e1 else e2
+                    return IfExp(_shrink_exp(e1), Constant(True), _shrink_exp(e2))
+                case BinOp(e1, op, e2):
+                    return BinOp(_shrink_exp(e1), op, _shrink_exp(e2))
+                case UnaryOp(op, e):
+                    return UnaryOp(op, _shrink_exp(e))
+                case Compare(e1, [cmp], [e2]):
+                    return Compare(_shrink_exp(e1), [cmp], [_shrink_exp(e2)])
+                case IfExp(e, s1, s2):
+                    return IfExp(_shrink_exp(e), s1, s2)
+                case _:
+                    return e
+
+        def _shrink_stmt(s: stmt) -> stmt:
+            match s:
+                case If(e, s1, s2):
+                    return If(
+                        _shrink_exp(e),
+                        [_shrink_stmt(s) for s in s1],
+                        [_shrink_stmt(s) for s in s2],
+                    )
+                case Assign(name, e):
+                    return Assign(name, _shrink_exp(e))
+                case Expr(e):
+                    return Expr(_shrink_exp(e))
+                case _:
+                    return s
+
+        return Module([_shrink_stmt(s) for s in p.body])
+
+    ############################################################################
     # Remove Complex Operands
     ############################################################################
 

@@ -55,6 +55,6 @@ def convert_program(p):
         return Tree("prog", [main_block])
     elif isinstance(p.body, dict):
         blocks = []
-        for (l, ss) in p.body.items():
+        for l, ss in p.body.items():
             blocks.append(Tree("block", [l] + [convert_instr(instr) for instr in ss]))
         return Tree("prog", blocks)
