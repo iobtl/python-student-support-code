@@ -64,6 +64,18 @@ class Compiler:
             case Call(Name("input_int"), []):
                 i = Name(generate_name("input"))
                 return (i, [(i, Call(Name("input_int"), []))])
+            case Compare(a, [cmp], [b]):
+                (a_exp, a_temp) = self.rco_exp(a, True)
+                (b_exp, b_temp) = self.rco_exp(b, True)
+
+                if need_atomic:
+                    tmp = Name(generate_name("tmp"))
+                    return (
+                        tmp,
+                        [*a_temp, *b_temp, (tmp, Compare(a_exp, [cmp], [b_exp]))],
+                    )
+                else:
+                    return (Compare(a_exp, [cmp], [b_exp]), [*a_temp, *b_temp])
             case UnaryOp(USub(), v):
                 (v_exp, v_temp) = self.rco_exp(v, True)
 
@@ -72,11 +84,18 @@ class Compiler:
                     return (tmp, [*v_temp, (tmp, UnaryOp(USub(), v_exp))])
                 else:
                     return (UnaryOp(USub(), v_exp), v_temp)
+            case UnaryOp(Not(), v):
+                (v_exp, v_temp) = self.rco_exp(v, False)
+
+                if need_atomic:
+                    tmp = Name(generate_name("tmp"))
+                    return (tmp, [*v_temp, (tmp, UnaryOp(Not(), v_exp))])
+                else:
+                    return (UnaryOp(Not(), v_exp), v_temp)
             case BinOp(a, Add(), b):
                 (a_exp, a_temp) = self.rco_exp(a, True)
                 (b_exp, b_temp) = self.rco_exp(b, True)
 
-                # Turn result of binary op into another temporary
                 if need_atomic:
                     tmp = Name(generate_name("tmp"))
                     return (tmp, [*a_temp, *b_temp, (tmp, BinOp(a_exp, Add(), b_exp))])
@@ -86,12 +105,41 @@ class Compiler:
                 (a_exp, a_temp) = self.rco_exp(a, True)
                 (b_exp, b_temp) = self.rco_exp(b, True)
 
-                # Turn result of binary op into another temporary
                 if need_atomic:
                     tmp = Name(generate_name("tmp"))
                     return (tmp, [*a_temp, *b_temp, (tmp, BinOp(a_exp, Sub(), b_exp))])
                 else:
                     return (BinOp(a_exp, Sub(), b_exp), [*a_temp, *b_temp])
+            case IfExp(cond, e1, e2):
+                (cond_exp, cond_temp) = self.rco_exp(cond, False)
+                (e1_exp, e1_temp) = self.rco_exp(e1, True)
+                (e2_exp, e2_temp) = self.rco_exp(e2, True)
+
+                if need_atomic:
+                    tmp = Name(generate_name("tmp"))
+                    return (
+                        tmp,
+                        [
+                            *cond_temp,
+                            *e1_temp,
+                            *e2_temp,
+                            (tmp, IfExp(cond_exp, e1_exp, e2_exp)),
+                        ],
+                    )
+                else:
+                    return (
+                        IfExp(cond_exp, e1_exp, e2_exp),
+                        [*cond_temp, *e1_temp, *e2_temp],
+                    )
+            case Begin(stmts, e):
+                (e_exp, e_temp) = self.rco_exp(e, False)
+
+                if need_atomic:
+                    tmp = Name(generate_name("tmp"))
+                    return (tmp, [*e_temp, (tmp, Begin(stmts, e_exp))])
+                else:
+                    # TODO:
+                    return (Begin(stmts, e_exp), e_temp)
             case _:
                 raise Exception("Unsupported expression: ", e)
 
@@ -113,6 +161,21 @@ class Compiler:
                 (e, e_temp) = self.rco_exp(exp, False)
                 stmts = [Assign([name], value) for name, value in e_temp]
                 stmts.append(Assign([Name(var)], e))
+
+                return stmts
+            case If(exp, s1, s2):
+                (e, e_temp) = self.rco_exp(exp, False)
+                stmts = [Assign([name], value) for name, value in e_temp]
+
+                s1_stmts = []
+                for s in s1:
+                    s1_stmts.extend(self.rco_stmt(s))
+
+                s2_stmts = []
+                for s in s2:
+                    s2_stmts.extend(self.rco_stmt(s))
+
+                stmts.append(If(e, s1_stmts, s2_stmts))
 
                 return stmts
             case _:

@@ -17,7 +17,7 @@ typecheck_Lif = type_check_Lif.TypeCheckLif().type_check
 typecheck_dict = {
     "source": typecheck_Lif,
     "shrink": typecheck_Lif,
-    "remove_complex_operands": typecheck_Lvar,
+    "remove_complex_operands": typecheck_Lif,
 }
 interpLif = interp_Lif.InterpLif().interp
 interp_dict = {
