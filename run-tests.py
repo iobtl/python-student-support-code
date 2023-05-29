@@ -3,6 +3,7 @@ import os
 import compiler_register_allocator as compiler
 
 # import compiler
+import interp_Cif
 import interp_Lif
 import type_check_Lvar
 import type_check_Lif
@@ -20,9 +21,11 @@ typecheck_dict = {
     "remove_complex_operands": typecheck_Lif,
 }
 interpLif = interp_Lif.InterpLif().interp
+interpCif = interp_Cif.InterpCif().interp
 interp_dict = {
     "shrink": interpLif,
     "remove_complex_operands": interpLif,
+    "explicate_control": interpCif,
     "select_instructions": interp_x86,
     "assign_homes": interp_x86,
     "patch_instructions": interp_x86,

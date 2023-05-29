@@ -9,6 +9,7 @@ from x86_ast import *
 
 Binding = tuple[Name, expr]
 Temporaries = list[Binding]
+Label = str
 
 
 class Compiler:
@@ -62,8 +63,11 @@ class Compiler:
             case Constant(_) | Name(_):
                 return (e, [])
             case Call(Name("input_int"), []):
-                i = Name(generate_name("input"))
-                return (i, [(i, Call(Name("input_int"), []))])
+                if need_atomic:
+                    i = Name(generate_name("input"))
+                    return (i, [(i, Call(Name("input_int"), []))])
+                else:
+                    return (Call(Name("input_int"), []), [])
             case Compare(a, [cmp], [b]):
                 (a_exp, a_temp) = self.rco_exp(a, True)
                 (b_exp, b_temp) = self.rco_exp(b, True)
@@ -112,8 +116,8 @@ class Compiler:
                     return (BinOp(a_exp, Sub(), b_exp), [*a_temp, *b_temp])
             case IfExp(cond, e1, e2):
                 (cond_exp, cond_temp) = self.rco_exp(cond, False)
-                (e1_exp, e1_temp) = self.rco_exp(e1, True)
-                (e2_exp, e2_temp) = self.rco_exp(e2, True)
+                (e1_exp, e1_temp) = self.rco_exp(e1, False)
+                (e2_exp, e2_temp) = self.rco_exp(e2, False)
 
                 if need_atomic:
                     tmp = Name(generate_name("tmp"))
@@ -193,6 +197,137 @@ class Compiler:
                 pass
 
     ############################################################################
+    # Explicate Control
+    ############################################################################
+
+    def create_block(
+        self, stmts: list[stmt], basic_blocks: dict[Label, list[stmt]]
+    ) -> list[Goto]:
+        """De-lineates a basic block."""
+        match stmts:
+            case [Goto(_)]:
+                return stmts
+            case _:
+                label = label_name(generate_name("block"))
+                basic_blocks[label] = stmts
+                return [Goto(label)]
+
+    def explicate_effect(
+        self, e: expr, cont: list[stmt], basic_blocks: dict[Label, list[stmt]]
+    ) -> list[stmt]:
+        """Generates code for expressions as statements, ignoring the result."""
+        match e:
+            case IfExp(cond, thn, els):
+                thn_e = self.explicate_effect(thn, cont, basic_blocks)
+                els_e = self.explicate_effect(els, cont, basic_blocks)
+                return self.explicate_pred(cond, thn_e, els_e, basic_blocks)
+            case Call(Name("input_int"), _):
+                return [Expr(e), *cont]
+            case Begin(body, _):
+                # TODO: verify
+                return body
+            case _:
+                # Discard result
+                return cont
+
+    def explicate_assign(
+        self,
+        rhs: expr,
+        lhs: expr,
+        cont: list[stmt],
+        basic_blocks: dict[Label, list[stmt]],
+    ) -> list[stmt]:
+        """Generates code for expressions on the RHS of an assignment."""
+        match rhs:
+            case IfExp(cond, thn, els):
+                cont_block = self.create_block(cont, basic_blocks)
+
+                # If condition passes, assigns result of thn to lhs
+                thn_case = self.explicate_assign(thn, lhs, cont_block, basic_blocks)
+                # Else, assigns result of els to lhs
+                els_case = self.explicate_assign(els, lhs, cont_block, basic_blocks)
+
+                return self.explicate_pred(cond, thn_case, els_case, basic_blocks)
+            case Begin(_, _):
+                pass
+            case _:
+                return [Assign([lhs], rhs)] + cont
+
+    def explicate_pred(
+        self,
+        cond: expr,
+        thn: list[stmt],
+        els: list[stmt],
+        basic_blocks: dict[Label, list[stmt]],
+    ) -> list[stmt]:
+        """Generates code for an if expression or statement by analyzing the condition expression."""
+        thn_goto = self.create_block(thn, basic_blocks)
+        els_goto = self.create_block(els, basic_blocks)
+
+        match cond:
+            case Compare(_, [_], [_]):
+                return [If(cond, thn_goto, els_goto)]
+            case Constant(True):
+                return thn
+            case Constant(False):
+                return els
+            case UnaryOp(Not(), v):
+                return [If(Compare(v, [Eq()], [Constant(False)]), thn_goto, els_goto)]
+            case IfExp(cond_e, body, orelse):
+                # Example: y + 2 if (x == 0 if x < 1 else x == 2) else y + 10
+                # Transformed:
+                # if x < 1:
+                #   if x == 0:
+                #       return y + 2
+                #   else:
+                #       return y + 10
+                # else:
+                #   if x == 2:
+                #       return y + 2
+                #   else:
+                #       return y + 10
+                return self.explicate_pred(
+                    cond_e,
+                    self.explicate_pred(body, thn_goto, els_goto, basic_blocks),
+                    self.explicate_pred(orelse, thn_goto, els_goto, basic_blocks),
+                    basic_blocks,
+                )
+            case Begin(_, _):
+                pass
+            case _:
+                return [
+                    If(Compare(cond, [Eq()], [Constant(False)]), els_goto, thn_goto)
+                ]
+
+    def explicate_stmt(
+        self, s: stmt, cont: list[stmt], basic_blocks: dict[Label, list[stmt]]
+    ):
+        """Generates code for statements."""
+        match s:
+            case Assign([lhs], rhs):
+                return self.explicate_assign(rhs, lhs, cont, basic_blocks)
+            case Expr(Call(Name("print"), [_])):
+                return [s, *cont]
+            case Expr(v):
+                return self.explicate_effect(v, cont, basic_blocks)
+            case If(cond, thn, els):
+                return [*self.explicate_pred(cond, thn, els, basic_blocks), *cont]
+
+    def explicate_control(self, p: Module) -> CProgram:
+        match p:
+            case Module(body):
+                new_body = [Return(Constant(0))]
+                basic_blocks = {}
+                # Process from back to front so that result of each processed stmt
+                # is stored in basic_blocks to be used as the *compiled* continuation parameter
+                # for the previous statement
+                for i in range(len(body) - 1, -1, -1):
+                    new_body = self.explicate_stmt(body[i], new_body, basic_blocks)
+                basic_blocks[label_name("start")] = new_body
+
+                return CProgram(basic_blocks)
+
+    ############################################################################
     # Select Instructions
     ############################################################################
 
@@ -230,7 +365,6 @@ class Compiler:
                         Instr("movq", [a_arg, Variable(var)]),
                         Instr(op_instr, [b_arg, Variable(var)]),
                     ]
-
             case Assign([Name(var)], UnaryOp(USub(), atm)):
                 return [
                     Instr("movq", [self.select_arg(atm), Variable(var)]),
@@ -247,6 +381,7 @@ class Compiler:
     def select_instructions(self, p: Module) -> X86Program:
         match p:
             case Module(body):
+                print(body)
                 return X86Program(
                     [instr for stmt in body for instr in self.select_stmt(stmt)]
                 )
