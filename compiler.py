@@ -334,7 +334,12 @@ class Compiler:
     def select_arg(self, e: expr) -> arg:
         match e:
             case Constant(c):
-                return Immediate(c)
+                if isinstance(c, int):
+                    return Immediate(c)
+                elif isinstance(c, bool):
+                    return Immediate(1 if c else 0)
+                else:
+                    raise Exception("Unsupported constant: ", e)
             case Name(n):
                 return Variable(n)
             case _:
@@ -342,6 +347,36 @@ class Compiler:
 
     def select_stmt(self, s: stmt) -> list[instr]:
         match s:
+            case Return(e):
+                if e:
+                    return [
+                        Instr("movq", [self.select_arg(e), Reg("rax")]),
+                        Jump(label_name("conclusion")),
+                    ]
+                else:
+                    return [Jump(label_name("conclusion"))]
+            case Goto(l):
+                return [Jump(l)]
+            case If(Compare(a, [cmp], [b]), [Goto(thn)], [Goto(els)]):
+                match cmp:
+                    case Eq():
+                        cmp_op = "e"
+                    case Lt():
+                        cmp_op = "l"
+                    case LtE():
+                        cmp_op = "le"
+                    case Gt():
+                        cmp_op = "g"
+                    case GtE():
+                        cmp_op = "ge"
+                    case _:
+                        raise Exception("Unrecognized comparison operator: ", s)
+
+                return [
+                    Instr("cmpq", [self.select_arg(a), self.select_arg(b)]),
+                    JumpIf(cmp_op, thn),
+                    Jump(els),
+                ]
             case Expr(Call(Name("print"), [atm])):
                 return [
                     Instr("movq", [self.select_arg(atm), Reg("rdi")]),
@@ -370,6 +405,34 @@ class Compiler:
                     Instr("movq", [self.select_arg(atm), Variable(var)]),
                     Instr("negq", [Variable(var)]),
                 ]
+            case Assign([Name(var)], UnaryOp(Not(), atm)):
+                xorq_instr = Instr("xorq", [Immediate(1), Variable(var)])
+                if str(atm) == str(var):
+                    return [xorq_instr]
+                else:
+                    return [
+                        Instr("movq", [self.select_arg(atm), Variable(var)]),
+                        xorq_instr,
+                    ]
+            case Assign([Name(var)], Compare(a, [cmp], [b])):
+                cmp_instr = Instr("cmpq", [self.select_arg(a), self.select_arg(b)])
+                mov_instr = Instr("movzbq", [Reg("al"), Variable(var)])
+
+                match cmp:
+                    case Eq():
+                        cmp_op = "sete"
+                    case Lt():
+                        cmp_op = "setl"
+                    case LtE():
+                        cmp_op = "setle"
+                    case Gt():
+                        cmp_op = "setg"
+                    case GtE():
+                        cmp_op = "setge"
+                    case _:
+                        raise Exception("Unrecognized comparison operator: ", s)
+
+                return [cmp_instr, Instr(cmp_op, [Reg("al")]), mov_instr]
             case Assign([Name(var)], Call(Name("input_int"), [])):
                 return [
                     Callq(label_name("read_int"), 0),
@@ -377,16 +440,16 @@ class Compiler:
                 ]
             case Assign([Name(var)], atm_exp):
                 return [Instr("movq", [self.select_arg(atm_exp), Variable(var)])]
-
-    def select_instructions(self, p: Module) -> X86Program:
-        match p:
-            case Module(body):
-                print(body)
-                return X86Program(
-                    [instr for stmt in body for instr in self.select_stmt(stmt)]
-                )
             case _:
-                pass
+                raise Exception("Unrecognized statement: ", s)
+
+    def select_instructions(self, p: CProgram) -> X86Program:
+        return X86Program(
+            {
+                label: [instr for stmt in stmts for instr in self.select_stmt(stmt)]
+                for label, stmts in p.body.items()
+            }
+        )
 
     ############################################################################
     # Assign Homes
