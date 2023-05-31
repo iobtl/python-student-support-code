@@ -206,19 +206,23 @@ class Compiler(compiler.Compiler):
 
     def allocate_registers(self, p: X86Program, graph: UndirectedAdjList) -> X86Program:
         def replace_args(mapping: Callable[[arg], location]) -> X86Program:
-            new_instrs = []
+            new_instrs = {}
 
-            for instr in p.body:
-                match instr:
-                    case Instr(op, args):
-                        new_instrs.append(
-                            Instr(
-                                op,
-                                [mapping(a) for a in args],
+            for label, block in p.body.items():
+                instrs = []
+                for instr in block:
+                    match instr:
+                        case Instr(op, args):
+                            instrs.append(
+                                Instr(
+                                    op,
+                                    [mapping(a) for a in args],
+                                )
                             )
-                        )
-                    case _:
-                        new_instrs.append(instr)
+                        case _:
+                            instrs.append(instr)
+
+                new_instrs[label] = instrs
             num_vars = len(graph.vertices())
             frame_size = (num_vars + 1) * 8 if num_vars % 2 != 0 else num_vars * 8
 
@@ -288,46 +292,55 @@ class Compiler(compiler.Compiler):
         spilled_offsets = set()
 
         # Determine which callee-saved registers were used
-        for instr in p.body:
-            match instr:
-                case Instr(_, args):
-                    for arg in args:
-                        match arg:
-                            case Reg(_):
-                                if arg in CALLEE_SAVED_REG:
-                                    used_callee.add(arg)
-                            case Deref(_, offset):
-                                spilled_offsets.add(offset)
-                            case _:
-                                continue
+        for block in p.body.values():
+            for instr in block:
+                match instr:
+                    case Instr(_, args):
+                        for arg in args:
+                            match arg:
+                                case Reg(_):
+                                    if arg in CALLEE_SAVED_REG:
+                                        used_callee.add(arg)
+                                case Deref(_, offset):
+                                    spilled_offsets.add(offset)
+                                case _:
+                                    continue
 
         num_callee = len(used_callee)
         num_spilled = len(spilled_offsets)
         stack_sub = align(8 * num_spilled + 8 * num_callee) - 8 * num_callee
 
-        new_instrs = [
-            Instr("pushq", [Reg("rbp")]),
-            Instr("movq", [Reg("rsp"), Reg("rbp")]),
-        ]
-
+        # Prelude
+        main_label = label_name("main")
+        new_instrs = {
+            main_label: [
+                Instr("pushq", [Reg("rbp")]),
+                Instr("movq", [Reg("rsp"), Reg("rbp")]),
+            ]
+        }
         # Save used callee-saved registers
         # NOTE: `pushq` also subtracts from `rsp`
         callee_reg_used = len(used_callee) > 0
         if callee_reg_used:
             for reg in used_callee:
-                new_instrs.append(Instr("pushq", [reg]))
-            new_instrs.append(Instr("subq", [Immediate(stack_sub), Reg("rsp")]))
+                new_instrs[main_label].append(Instr("pushq", [reg]))
+            new_instrs[main_label].append(
+                Instr("subq", [Immediate(stack_sub), Reg("rsp")])
+            )
 
-        new_instrs.extend(p.body)
-
+        # Conclusion
+        conclusion_label = label_name("conclusion")
+        new_instrs[conclusion_label] = []
         if callee_reg_used:
-            new_instrs.append(Instr("addq", [Immediate(stack_sub), Reg("rsp")]))
+            new_instrs[conclusion_label].append(
+                Instr("addq", [Immediate(stack_sub), Reg("rsp")])
+            )
             for reg in used_callee:
-                new_instrs.append(Instr("popq", [reg]))
-        new_instrs.append(Instr("popq", [Reg("rbp")]))
-        new_instrs.append(Instr("retq", []))
+                new_instrs[conclusion_label].append(Instr("popq", [reg]))
+        new_instrs[conclusion_label].append(Instr("popq", [Reg("rbp")]))
+        new_instrs[conclusion_label].append(Instr("retq", []))
 
-        return X86Program(new_instrs, p.frame_size)
+        return X86Program(new_instrs | p.body, p.frame_size)
 
 
 if __name__ == "__main__":
