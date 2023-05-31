@@ -146,17 +146,20 @@ class Compiler(compiler.Compiler):
         self, p: X86Program, live_after: dict[instr, Set[location]]
     ) -> UndirectedAdjList:
         i_graph = UndirectedAdjList()
-        for instr in p.body:
-            match instr:
-                case Instr("movq", [arg1, arg2]):
-                    for v in live_after.get(instr, []):
-                        if v != arg1 and v != arg2:
-                            i_graph.add_edge(arg2, v)
-                case _:
-                    for d in self.write_vars(instr):
+
+        for block in p.body.values():
+            for instr in block:
+                match instr:
+                    case Instr("movq" | "movzb", [arg1, arg2]):
+                        # PERF: what if `arg2` is assigned to and never used again?
                         for v in live_after.get(instr, []):
-                            if d != v:
-                                i_graph.add_edge(d, v)
+                            if v != arg1 and v != arg2:
+                                i_graph.add_edge(arg2, v)
+                    case _:
+                        for d in self.write_vars(instr):
+                            for v in live_after.get(instr, []):
+                                if d != v:
+                                    i_graph.add_edge(d, v)
 
         return i_graph
 
