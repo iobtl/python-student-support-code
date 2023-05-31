@@ -530,9 +530,6 @@ class Compiler:
     def patch_instrs(self, ss: list[instr]) -> list[instr]:
         return [i for instr in ss for i in self.patch_instr(instr)]
 
-    def patch_instructions(self, p: X86Program) -> X86Program:
-        return X86Program(self.patch_instrs(p.body))
-
     ############################################################################
     # Prelude & Conclusion
     ############################################################################

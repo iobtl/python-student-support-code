@@ -272,8 +272,14 @@ class Compiler(compiler.Compiler):
                 case _:
                     return False
 
-        new_instrs = self.patch_instrs(p.body)
-        new_instrs = [instr for instr in new_instrs if not instr_duplicated(instr)]
+        new_instrs = {
+            l: [
+                instr
+                for instr in self.patch_instrs(block)
+                if not instr_duplicated(instr)
+            ]
+            for l, block in p.body.items()
+        }
 
         return X86Program(new_instrs, p.frame_size)
 
