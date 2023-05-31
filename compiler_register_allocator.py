@@ -1,5 +1,7 @@
 import compiler
-from graph import UndirectedAdjList
+from compiler import Block, Label
+
+from graph import DirectedAdjList, UndirectedAdjList, topological_sort, transpose
 from ast import *
 from x86_ast import *
 from typing import Callable, Set
@@ -63,7 +65,7 @@ class Compiler(compiler.Compiler):
                 "negq" | "pushq", [arg]
             ) if not isinstance(arg, Immediate):
                 return set((arg,))
-            case Instr("addq" | "subq", args):
+            case Instr("addq" | "subq" | "cmpq" | "movzbq" | "xorq", args):
                 return set([arg for arg in args if not isinstance(arg, Immediate)])
             case Callq(_, num_args):
                 # TODO: handle spills
@@ -73,7 +75,9 @@ class Compiler(compiler.Compiler):
 
     def write_vars(self, i: instr) -> Set[location]:
         match i:
-            case Instr(_, [_, arg]) | Instr("popq", [arg]):
+            case Instr(_, [_, arg]):
+                return set((arg,))
+            case Instr(op, [arg]) if op not in ["negq", "pushq"]:
                 return set((arg,))
             case Callq(_, _):
                 # All caller-saved registers may be written to
@@ -81,23 +85,56 @@ class Compiler(compiler.Compiler):
             case _:
                 return set()
 
-    def uncover_live(self, p: X86Program) -> dict[instr, Set[location]]:
-        """Returns mapping for each instruction to its live-after set."""
+    def uncover_live_block(
+        self, label: Label, b: Block, live_before_block: dict[Label, Set[location]]
+    ) -> dict[instr, Set[location]]:
         mapping = {}
-        num_instr = len(p.body)
+        num_instr = len(b)
         # L_before of (k+1)-th instruction is L_after of k-th instruction
         # Live-after set for last instruction is empty
-        l_before = self.read_vars(p.body[num_instr - 1])
+        l_before = self.read_vars(b[num_instr - 1])
         l_after = set()
-        mapping[p.body[num_instr - 1]] = l_after
+        mapping[b[num_instr - 1]] = l_after
 
         for i in range(num_instr - 2, -1, -1):
-            instr = p.body[i]
-            l_after = l_before
+            instr = b[i]
+
+            match instr:
+                # Special case for conditional jumps, since we don't know which branch
+                # will be taken
+                case JumpIf(_, l):
+                    l_after = l_before.union(live_before_block.get(l, set()))
+                case _:
+                    l_after = l_before
+
             l_before = l_after.difference(self.write_vars(instr)).union(
                 self.read_vars(instr)
             )
             mapping[instr] = l_after
+
+        # Store live_before of first instruction as the live_before of
+        # this block
+        live_before_block[label] = l_before
+
+        return mapping
+
+    def uncover_live(self, p: X86Program) -> dict[instr, Set[location]]:
+        """Returns mapping for each instruction to its live-after set."""
+
+        # Construct CFG
+        cfg = DirectedAdjList()
+        for label, block in p.body.items():
+            for instr in block:
+                match instr:
+                    # TODO: add conclusion
+                    case Jump(l) | JumpIf(_, l) if l != "_conclusion":
+                        cfg.add_edge(label, l)
+        rev_cfg = topological_sort(transpose(cfg))
+        live_before_block = {}
+        mapping = {}
+
+        for label in rev_cfg:
+            mapping |= self.uncover_live_block(label, p.body[label], live_before_block)
 
         return mapping
 

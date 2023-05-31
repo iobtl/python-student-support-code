@@ -10,6 +10,7 @@ from x86_ast import *
 Binding = tuple[Name, expr]
 Temporaries = list[Binding]
 Label = str
+Block = list[stmt]
 
 
 class Compiler:
