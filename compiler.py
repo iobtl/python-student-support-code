@@ -497,6 +497,20 @@ class Compiler:
 
     def patch_instr(self, i: instr) -> list[instr]:
         match i:
+            case Instr("cmpq", [c, Immediate(v)]):
+                # Second argument of cmpq cannot be constant
+                return [
+                    Instr("movq", [Immediate(v), Reg("rax")]),
+                    Instr("cmpq", [c, Reg("rax")]),
+                ]
+            case Instr("movzbq", [a, b]) if isinstance(b, Deref) or isinstance(
+                b, Immediate
+            ):
+                # Second argument of movzbq needs to be a register
+                return [
+                    Instr("movzbq", [a, Reg("rax")]),
+                    Instr("movq", [Reg("rax"), b]),
+                ]
             case Instr(op, [arg1, arg2]):
                 need_patch = False
                 match (arg1, arg2):
