@@ -344,10 +344,10 @@ class Compiler:
     def select_arg(self, e: expr) -> arg:
         match e:
             case Constant(c):
-                if isinstance(c, int):
-                    return Immediate(c)
-                elif isinstance(c, bool):
+                if isinstance(c, bool):
                     return Immediate(1 if c else 0)
+                elif isinstance(c, int):
+                    return Immediate(c)
                 else:
                     raise Exception("Unsupported constant: ", e)
             case Name(n):
@@ -468,10 +468,17 @@ class Compiler:
     def patch_instr(self, i: instr) -> list[instr]:
         match i:
             case Instr("cmpq", [c, Immediate(v)]):
+                # TODO(verify): correct to just assign to another register like that?
                 # Second argument of cmpq cannot be constant
+
+                if str(c) == "%rax":
+                    reassign_reg = "rcx"
+                else:
+                    reassign_reg = "rax"
+
                 return [
-                    Instr("movq", [Immediate(v), Reg("rax")]),
-                    Instr("cmpq", [c, Reg("rax")]),
+                    Instr("movq", [Immediate(v), Reg(reassign_reg)]),
+                    Instr("cmpq", [c, Reg(reassign_reg)]),
                 ]
             case Instr("movzbq", [a, b]) if isinstance(b, Deref) or isinstance(
                 b, Immediate
