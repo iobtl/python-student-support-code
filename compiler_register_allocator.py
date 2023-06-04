@@ -124,6 +124,8 @@ class Compiler(compiler.Compiler):
         # Construct CFG
         cfg = DirectedAdjList()
         for label, block in p.body.items():
+            cfg.add_vertex(label)
+
             for instr in block:
                 match instr:
                     # TODO: add conclusion
