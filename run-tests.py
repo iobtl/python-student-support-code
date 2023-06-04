@@ -12,7 +12,6 @@ from interp_x86.eval_x86 import interp_x86
 
 compiler = compiler.Compiler()
 
-typecheck_Lvar = type_check_Lvar.TypeCheckLvar().type_check
 typecheck_Lif = type_check_Lif.TypeCheckLif().type_check
 
 typecheck_dict = {

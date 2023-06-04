@@ -65,3 +65,10 @@ class InterpLif(InterpLvar):
                         return self.interp_stmts(orelse + cont, env)
             case _:
                 return super().interp_stmt(s, env, cont)
+
+    def interp(self, p):
+        match p:
+            case Module(body):
+                return self.interp_stmts(body, {})
+            case _:
+                raise Exception("interp: unexpected " + repr(p))

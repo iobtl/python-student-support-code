@@ -241,12 +241,10 @@ class Compiler:
         """Generates code for expressions on the RHS of an assignment."""
         match rhs:
             case IfExp(cond, thn, els):
-                cont_block = self.create_block(cont, basic_blocks)
-
                 # If condition passes, assigns result of thn to lhs
-                thn_case = self.explicate_assign(thn, lhs, cont_block, basic_blocks)
+                thn_case = self.explicate_assign(thn, lhs, cont, basic_blocks)
                 # Else, assigns result of els to lhs
-                els_case = self.explicate_assign(els, lhs, cont_block, basic_blocks)
+                els_case = self.explicate_assign(els, lhs, cont, basic_blocks)
 
                 return self.explicate_pred(cond, thn_case, els_case, basic_blocks)
             case Begin(_, _):
@@ -308,11 +306,22 @@ class Compiler:
             case Assign([lhs], rhs):
                 return self.explicate_assign(rhs, lhs, cont, basic_blocks)
             case Expr(Call(Name("print"), [_])):
+                # TODO: verify
                 return [s, *cont]
             case Expr(v):
                 return self.explicate_effect(v, cont, basic_blocks)
             case If(cond, thn, els):
-                return [*self.explicate_pred(cond, thn, els, basic_blocks), *cont]
+                thn_pred = [
+                    stmt
+                    for thn_stmt in thn
+                    for stmt in self.explicate_stmt(thn_stmt, cont, basic_blocks)
+                ]
+                els_pred = [
+                    stmt
+                    for els_stmt in els
+                    for stmt in self.explicate_stmt(els_stmt, cont, basic_blocks)
+                ]
+                return self.explicate_pred(cond, thn_pred, els_pred, basic_blocks)
 
     def explicate_control(self, p: Module) -> CProgram:
         match p:
@@ -451,45 +460,6 @@ class Compiler:
                 for label, stmts in p.body.items()
             }
         )
-
-    ############################################################################
-    # Assign Homes
-    ############################################################################
-
-    def assign_homes_arg(self, a: arg, home: dict[Variable, arg]) -> arg:
-        match a:
-            # The only case we care about
-            case Variable(_):
-                home_arg = home.get(a)
-
-                if home_arg:
-                    return home_arg
-                else:
-                    arg = Deref("rbp", -8 * (len(home) + 1))
-                    home[a] = arg
-                    return arg
-            case _:
-                return a
-
-    def assign_homes_instr(self, i: instr, home: dict[Variable, arg]) -> instr:
-        match i:
-            case Instr(op, args):
-                return Instr(op, [self.assign_homes_arg(arg, home) for arg in args])
-            case Callq(_, _) | Jump():
-                return i
-
-    def assign_homes_instrs(
-        self, ss: list[instr], home: dict[Variable, arg]
-    ) -> list[instr]:
-        return [self.assign_homes_instr(instr, home) for instr in ss]
-
-    def assign_homes(self, p: X86Program) -> X86Program:
-        home = {}
-        assigned = self.assign_homes_instrs(p.body, home)
-        num_vars = len(home)
-        frame_size = (num_vars + 1) * 8 if num_vars % 2 != 0 else num_vars * 8
-
-        return X86Program(assigned, frame_size)
 
     ############################################################################
     # Patch Instructions

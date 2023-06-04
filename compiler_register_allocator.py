@@ -333,6 +333,8 @@ class Compiler(compiler.Compiler):
             new_instrs[main_label].append(
                 Instr("subq", [Immediate(stack_sub), Reg("rsp")])
             )
+        # Jump to start
+        new_instrs[main_label].append(Jump(label_name("start")))
 
         # Conclusion
         conclusion_label = label_name("conclusion")
