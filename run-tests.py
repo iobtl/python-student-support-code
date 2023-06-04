@@ -30,9 +30,11 @@ interp_dict = {
     "patch_instructions": interp_x86,
 }
 
-if False:
+TESTNAME = os.getenv("TESTNAME", "")
+
+if TESTNAME:
     run_one_test(
-        os.getcwd() + "/tests/var/zero.py",
+        os.getcwd() + f"/tests/var/{TESTNAME}.py",
         "var",
         compiler,
         "var",
