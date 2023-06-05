@@ -3,6 +3,7 @@ import os
 
 from ast import *
 from typing import Set
+from graph import DirectedAdjList
 
 from utils import *
 from x86_ast import *
@@ -14,6 +15,23 @@ Block = list[stmt]
 
 
 class Compiler:
+    ############################################################################
+    # Utils
+    ############################################################################
+    @staticmethod
+    def build_cfg(p: X86Program) -> DirectedAdjList:
+        cfg = DirectedAdjList()
+        for label, block in p.body.items():
+            cfg.add_vertex(label)
+
+            for instr in block:
+                match instr:
+                    # TODO: add conclusion
+                    case Jump(l) | JumpIf(_, l) if l != "_conclusion":
+                        cfg.add_edge(label, l)
+
+        return cfg
+
     ############################################################################
     # Shrink
     ############################################################################
@@ -241,10 +259,11 @@ class Compiler:
         """Generates code for expressions on the RHS of an assignment."""
         match rhs:
             case IfExp(cond, thn, els):
+                cont_block = self.create_block(cont, basic_blocks)
                 # If condition passes, assigns result of thn to lhs
-                thn_case = self.explicate_assign(thn, lhs, cont, basic_blocks)
+                thn_case = self.explicate_assign(thn, lhs, cont_block, basic_blocks)
                 # Else, assigns result of els to lhs
-                els_case = self.explicate_assign(els, lhs, cont, basic_blocks)
+                els_case = self.explicate_assign(els, lhs, cont_block, basic_blocks)
 
                 return self.explicate_pred(cond, thn_case, els_case, basic_blocks)
             case Begin(_, _):
@@ -311,15 +330,16 @@ class Compiler:
             case Expr(v):
                 return self.explicate_effect(v, cont, basic_blocks)
             case If(cond, thn, els):
+                cont_block = self.create_block(cont, basic_blocks)
                 thn_pred = [
                     stmt
                     for thn_stmt in thn
-                    for stmt in self.explicate_stmt(thn_stmt, cont, basic_blocks)
+                    for stmt in self.explicate_stmt(thn_stmt, cont_block, basic_blocks)
                 ]
                 els_pred = [
                     stmt
                     for els_stmt in els
-                    for stmt in self.explicate_stmt(els_stmt, cont, basic_blocks)
+                    for stmt in self.explicate_stmt(els_stmt, cont_block, basic_blocks)
                 ]
                 return self.explicate_pred(cond, thn_pred, els_pred, basic_blocks)
 

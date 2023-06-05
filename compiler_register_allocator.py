@@ -75,7 +75,7 @@ class Compiler(compiler.Compiler):
 
     def write_vars(self, i: instr) -> Set[location]:
         match i:
-            case Instr(_, [_, arg]):
+            case Instr("addq" | "subq" | "movq" | "xorq" | "movzbq", [_, arg]):
                 return set((arg,))
             case Instr(op, [arg]) if op not in ["negq", "pushq"]:
                 return set((arg,))
@@ -93,6 +93,12 @@ class Compiler(compiler.Compiler):
         # L_before of (k+1)-th instruction is L_after of k-th instruction
         # Live-after set for last instruction is empty
         l_before = self.read_vars(b[num_instr - 1])
+        # If last instruction in block is a Jump
+        # TODO: merge with below?
+        match b[num_instr - 1]:
+            case Jump(l):
+                l_before = l_before.union(live_before_block.get(l, set()))
+
         l_after = set()
         mapping[b[num_instr - 1]] = l_after
 
@@ -122,15 +128,7 @@ class Compiler(compiler.Compiler):
         """Returns mapping for each instruction to its live-after set."""
 
         # Construct CFG
-        cfg = DirectedAdjList()
-        for label, block in p.body.items():
-            cfg.add_vertex(label)
-
-            for instr in block:
-                match instr:
-                    # TODO: add conclusion
-                    case Jump(l) | JumpIf(_, l) if l != "_conclusion":
-                        cfg.add_edge(label, l)
+        cfg = compiler.Compiler.build_cfg(p)
         rev_cfg = topological_sort(transpose(cfg))
         live_before_block = {}
         mapping = {}
