@@ -1592,6 +1592,15 @@ def compile_and_test(
         passname, interp_dict, program_root, program, compiler_name
     )
 
+    passname = "remove_jumps"
+    trace("\n# " + passname + "\n")
+    program = compiler.remove_jumps(program)
+    trace(program)
+    total_passes += 1
+    successful_passes += test_pass(
+        passname, interp_dict, program_root, program, compiler_name
+    )
+
     passname = "assign_homes"
     trace("\n# " + passname + "\n")
     program = compiler.assign_homes(program)

@@ -2,7 +2,7 @@ import ast
 import os
 
 from ast import *
-from typing import Set
+from typing import NamedTuple, Set
 from graph import DirectedAdjList
 
 from utils import *
@@ -480,6 +480,45 @@ class Compiler:
                 for label, stmts in p.body.items()
             }
         )
+
+    ############################################################################
+    # Remove Jumps
+    ############################################################################
+
+    def remove_jumps(self, p: X86Program) -> X86Program:
+        class MergeSet(NamedTuple):
+            base: Label
+            base_jmp_idx: int
+            to_merge: Label
+
+        cfg = Compiler.build_cfg(p)
+
+        in_edges = []
+        merge_into: list[MergeSet] = []
+        for label, block in p.body.items():
+            for idx, instr in enumerate(block):
+                match instr:
+                    case Jump(l) if l != label_name("conclusion"):
+                        for e in cfg.in_edges(l):
+                            in_edges.append(e)
+                        if len(in_edges) == 1:
+                            merge_into.append(MergeSet(label, idx, l))
+
+            in_edges.clear()
+
+        for m in merge_into:
+            # TODO: potentially O(n^2)
+            (base, base_jmp_idx, to_merge) = m
+            old_base_instrs = p.body[base]
+            p.body[base] = (
+                old_base_instrs[:base_jmp_idx]
+                + p.body[to_merge]
+                + old_base_instrs[base_jmp_idx + 1 :]
+            )
+
+            del p.body[to_merge]
+
+        return p
 
     ############################################################################
     # Patch Instructions
