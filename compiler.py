@@ -330,7 +330,7 @@ class Compiler:
 
     def explicate_stmt(
         self, s: stmt, cont: list[stmt], basic_blocks: dict[Label, list[stmt]]
-    ):
+    ) -> list[stmt]:
         """Generates code for statements."""
         match s:
             case Assign([lhs], rhs):
@@ -353,6 +353,28 @@ class Compiler:
                     for stmt in self.explicate_stmt(els_stmt, cont_block, basic_blocks)
                 ]
                 return self.explicate_pred(cond, thn_pred, els_pred, basic_blocks)
+            case While(cond, body, []):
+                # Assembly: cmp, j{cc} (to after body), {body}, jmp (to cmp)
+                cont_block = self.create_block(cont, basic_blocks)
+                body_cont = [Goto("tmp_cmp_label")]
+                body_pred = [
+                    stmt
+                    for body_stmt in body
+                    # TODO(verify): body_cont correct? should it be empty?
+                    for stmt in self.explicate_stmt(body_stmt, [], basic_blocks)
+                ]
+                body_block = self.create_block([*body_pred, *body_cont], basic_blocks)
+                body_label = body_block[0].label
+
+                if_pred = self.explicate_pred(
+                    UnaryOp(Not(), cond), cont_block, body_block, basic_blocks
+                )
+                if_block = self.create_block(if_pred, basic_blocks)
+
+                # Patch jmp at end of body to If statement
+                basic_blocks[body_label][-1] = if_block[0]
+
+                return if_block
 
     def explicate_control(self, p: Module) -> CProgram:
         match p:
