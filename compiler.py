@@ -201,6 +201,17 @@ class Compiler:
                 stmts.append(If(e, s1_stmts, s2_stmts))
 
                 return stmts
+            case While(exp, body, []):
+                (e, e_temp) = self.rco_exp(exp, False)
+                stmts = [Assign([name], value) for name, value in e_temp]
+
+                body_rco = []
+                for stmt in body:
+                    body_rco.extend(self.rco_stmt(stmt))
+
+                stmts.append(While(e, body_rco, []))
+
+                return stmts
             case _:
                 raise Exception("Unsupported statement: ", s)
 
