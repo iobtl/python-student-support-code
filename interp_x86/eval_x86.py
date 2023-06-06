@@ -9,13 +9,15 @@ from utils import *
 from .convert_x86 import convert_program
 from .parser_x86 import x86_parser, x86_parser_instrs
 
+LOGGING = os.getenv("LOGGING", False)
+
 
 def interp_x86(program):
     x86_program = convert_program(program)
-    emu = X86Emulator(logging=False)
+    emu = X86Emulator(logging=True if LOGGING else False)
     x86_output = emu.eval_program(x86_program)
     for s in x86_output:
-        print(s, end="")
+        print(s)
 
 
 @dataclass

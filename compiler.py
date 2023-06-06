@@ -356,15 +356,9 @@ class Compiler:
                 # Assembly: cmp, j{cc} (to after body), {body}, jmp (to cmp)
                 cont_block = self.create_block(cont, basic_blocks)
                 loop_block_label = label_name(generate_name("block"))
-                body_cont = [Goto(loop_block_label)]
-
-                # TODO: repeated?
-                body_pred = body_cont
+                body_pred = [Goto(loop_block_label)]
                 for i in range(len(body) - 1, -1, -1):
                     body_pred = self.explicate_stmt(body[i], body_pred, basic_blocks)
-                    # print(body_pred)
-                    # if i == len(body) - 3:
-                    #     break
                 body_block = self.create_block(body_pred, basic_blocks)
 
                 if_pred = self.explicate_pred(

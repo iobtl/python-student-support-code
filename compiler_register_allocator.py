@@ -2,6 +2,7 @@ import compiler
 from compiler import Block, Label
 
 from graph import DirectedAdjList, UndirectedAdjList, topological_sort, transpose
+from dataflow_analysis import analyze_dataflow
 from ast import *
 from x86_ast import *
 from typing import Callable, Set
@@ -85,56 +86,42 @@ class Compiler(compiler.Compiler):
             case _:
                 return set()
 
-    def uncover_live_block(
-        self, label: Label, b: Block, live_before_block: dict[Label, Set[location]]
-    ) -> dict[instr, Set[location]]:
-        mapping = {}
-        num_instr = len(b)
-        # L_before of (k+1)-th instruction is L_after of k-th instruction
-        # Live-after set for last instruction is empty
-        l_before = self.read_vars(b[num_instr - 1])
-        # If last instruction in block is a Jump
-        # TODO: merge with below?
-        match b[num_instr - 1]:
-            case Jump(l):
-                l_before = l_before.union(live_before_block.get(l, set()))
-
-        l_after = set()
-        mapping[b[num_instr - 1]] = l_after
-
-        for i in range(num_instr - 2, -1, -1):
-            instr = b[i]
-
-            match instr:
-                # Special case for conditional jumps, since we don't know which branch
-                # will be taken
-                case JumpIf(_, l):
-                    l_after = l_before.union(live_before_block.get(l, set()))
-                case _:
-                    l_after = l_before
-
-            l_before = l_after.difference(self.write_vars(instr)).union(
-                self.read_vars(instr)
-            )
-            mapping[instr] = l_after
-
-        # Store live_before of first instruction as the live_before of
-        # this block
-        live_before_block[label] = l_before
-
-        return mapping
-
     def uncover_live(self, p: X86Program) -> dict[instr, Set[location]]:
         """Returns mapping for each instruction to its live-after set."""
 
-        # Construct CFG
-        cfg = compiler.Compiler.build_cfg(p)
-        rev_cfg = topological_sort(transpose(cfg))
-        live_before_block = {}
-        mapping = {}
+        def _transfer(label: Label, live_after_block: set) -> set:
+            """Transfer function for dataflow analysis.
 
-        for label in rev_cfg:
-            mapping |= self.uncover_live_block(label, p.body[label], live_before_block)
+            Note that live_after is simply the live_before set for a block which
+            this current block jumps to.
+            Returns live-before set for the analyzed block.
+            Also updates live-before and live-after sets for every instruction.
+            """
+            block = p.body[label]
+            live_before = self.read_vars(block[-1])
+            live_after = live_after_block.copy()
+            for i in range(len(block) - 2, -1, -1):
+                instr = block[i]
+
+                match instr:
+                    case JumpIf(_, l):
+                        live_after = live_before.union(live_after_block)
+                    case _:
+                        live_after = live_before
+
+                live_before = live_after.difference(self.write_vars(instr)).union(
+                    self.read_vars(instr)
+                )
+                mapping[instr] = live_after
+
+            return live_before
+
+        def _join(x: set, y: set) -> set:
+            return x.union(y)
+
+        cfg = compiler.Compiler.build_cfg(p)
+        mapping = {}
+        analyze_dataflow(cfg, _transfer, set(), _join)
 
         return mapping
 
