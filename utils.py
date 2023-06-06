@@ -1631,7 +1631,7 @@ def compile_and_test(
     total_passes += 1
 
     # Run the final x86 program
-    emulate_x86 = False
+    emulate_x86 = True
     if emulate_x86:
         stdin = sys.stdin
         stdout = sys.stdout

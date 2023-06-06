@@ -342,39 +342,37 @@ class Compiler:
                 return self.explicate_effect(v, cont, basic_blocks)
             case If(cond, thn, els):
                 cont_block = self.create_block(cont, basic_blocks)
-                thn_pred = [
-                    stmt
-                    for thn_stmt in thn
-                    for stmt in self.explicate_stmt(thn_stmt, cont_block, basic_blocks)
-                ]
-                els_pred = [
-                    stmt
-                    for els_stmt in els
-                    for stmt in self.explicate_stmt(els_stmt, cont_block, basic_blocks)
-                ]
+
+                thn_pred = cont_block.copy()
+                for i in range(len(thn) - 1, -1, -1):
+                    thn_pred = self.explicate_stmt(thn[i], thn_pred, basic_blocks)
+
+                els_pred = cont_block.copy()
+                for i in range(len(els) - 1, -1, -1):
+                    els_pred = self.explicate_stmt(els[i], els_pred, basic_blocks)
+
                 return self.explicate_pred(cond, thn_pred, els_pred, basic_blocks)
             case While(cond, body, []):
                 # Assembly: cmp, j{cc} (to after body), {body}, jmp (to cmp)
                 cont_block = self.create_block(cont, basic_blocks)
-                body_cont = [Goto("tmp_cmp_label")]
-                body_pred = [
-                    stmt
-                    for body_stmt in body
-                    # TODO(verify): body_cont correct? should it be empty?
-                    for stmt in self.explicate_stmt(body_stmt, [], basic_blocks)
-                ]
-                body_block = self.create_block([*body_pred, *body_cont], basic_blocks)
-                body_label = body_block[0].label
+                loop_block_label = label_name(generate_name("block"))
+                body_cont = [Goto(loop_block_label)]
+
+                # TODO: repeated?
+                body_pred = body_cont
+                for i in range(len(body) - 1, -1, -1):
+                    body_pred = self.explicate_stmt(body[i], body_pred, basic_blocks)
+                    # print(body_pred)
+                    # if i == len(body) - 3:
+                    #     break
+                body_block = self.create_block(body_pred, basic_blocks)
 
                 if_pred = self.explicate_pred(
-                    UnaryOp(Not(), cond), cont_block, body_block, basic_blocks
+                    cond, body_block, cont_block, basic_blocks
                 )
-                if_block = self.create_block(if_pred, basic_blocks)
+                basic_blocks[loop_block_label] = if_pred
 
-                # Patch jmp at end of body to If statement
-                basic_blocks[body_label][-1] = if_block[0]
-
-                return if_block
+                return [Goto(loop_block_label)]
 
     def explicate_control(self, p: Module) -> CProgram:
         match p:
@@ -436,7 +434,11 @@ class Compiler:
                         raise Exception("Unrecognized comparison operator: ", s)
 
                 return [
-                    Instr("cmpq", [self.select_arg(a), self.select_arg(b)]),
+                    # NOTE: order of comparison is swapped!
+                    # a > b -> cmpq a, b; sets g if b > a, e if b == a, l if b < a
+                    # This is wrong! So need to swap the both.
+                    # AT&T convention sets cmpq a, b based on result of b - a
+                    Instr("cmpq", [self.select_arg(b), self.select_arg(a)]),
                     JumpIf(cmp_op, thn),
                     Jump(els),
                 ]
