@@ -86,7 +86,7 @@ class Compiler(compiler.Compiler):
             case _:
                 return set()
 
-    def uncover_live(self, p: X86Program) -> dict[instr, Set[location]]:
+    def uncover_live(self, p: X86Program) -> dict[tuple[Label, instr], Set[location]]:
         """Returns mapping for each instruction to its live-after set."""
 
         def _transfer(label: Label, live_after_block: set) -> set:
@@ -98,13 +98,20 @@ class Compiler(compiler.Compiler):
             Also updates live-before and live-after sets for every instruction.
             """
             block = p.body[label]
+            last_instr = block[-1]
             live_before = self.read_vars(block[-1])
+            match last_instr:
+                case JumpIf(_, _) | Jump(_):
+                    live_before = live_before.union(live_after_block)
+
             live_after = live_after_block.copy()
+            mapping[(label, block[-1])] = live_after
+
             for i in range(len(block) - 2, -1, -1):
                 instr = block[i]
 
                 match instr:
-                    case JumpIf(_, l):
+                    case JumpIf(_, _) | Jump(_):
                         live_after = live_before.union(live_after_block)
                     case _:
                         live_after = live_before
@@ -112,7 +119,7 @@ class Compiler(compiler.Compiler):
                 live_before = live_after.difference(self.write_vars(instr)).union(
                     self.read_vars(instr)
                 )
-                mapping[instr] = live_after
+                mapping[(label, instr)] = live_after
 
             return live_before
 
@@ -121,7 +128,7 @@ class Compiler(compiler.Compiler):
 
         cfg = compiler.Compiler.build_cfg(p)
         mapping = {}
-        analyze_dataflow(cfg, _transfer, set(), _join)
+        analyze_dataflow(transpose(cfg), _transfer, set(), _join)
 
         return mapping
 
@@ -130,21 +137,21 @@ class Compiler(compiler.Compiler):
     ############################################################################
 
     def build_interference(
-        self, p: X86Program, live_after: dict[instr, Set[location]]
+        self, p: X86Program, live_after: dict[tuple[Label, instr], Set[location]]
     ) -> UndirectedAdjList:
         i_graph = UndirectedAdjList()
 
-        for block in p.body.values():
+        for label, block in p.body.items():
             for instr in block:
                 match instr:
                     case Instr("movq" | "movzb", [arg1, arg2]):
                         # PERF: what if `arg2` is assigned to and never used again?
-                        for v in live_after.get(instr, []):
+                        for v in live_after.get((label, instr), []):
                             if v != arg1 and v != arg2:
                                 i_graph.add_edge(arg2, v)
                     case _:
                         for d in self.write_vars(instr):
-                            for v in live_after.get(instr, []):
+                            for v in live_after.get((label, instr), []):
                                 if d != v:
                                     i_graph.add_edge(d, v)
 
