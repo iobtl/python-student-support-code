@@ -1,4 +1,5 @@
 import ast
+import itertools
 import os
 
 from ast import *
@@ -187,65 +188,80 @@ class Compiler:
 
     def rco_exp(self, e: expr, need_atomic: bool) -> tuple[expr, Temporaries]:
         match e:
-            case Constant(_) | Name(_):
+            case Constant(_) | Name(_) | GlobalValue(_):
                 return (e, [])
             case Call(Name("input_int"), []):
+                ret = e
                 if need_atomic:
                     i = Name(generate_name("input"))
-                    return (i, [(i, Call(Name("input_int"), []))])
+                    return (i, [(i, ret)])
                 else:
-                    return (Call(Name("input_int"), []), [])
+                    return (ret, [])
+            case Call(Name("len"), [e]):
+                (e_exp, e_temp) = self.rco_exp(e, True)
+                ret = Call(Name("len"), [e_exp])
+                if need_atomic:
+                    i = Name(generate_name("len"))
+                    return (i, [(i, ret)])
+                else:
+                    return (ret, e_temp)
             case Compare(a, [cmp], [b]):
                 (a_exp, a_temp) = self.rco_exp(a, True)
                 (b_exp, b_temp) = self.rco_exp(b, True)
 
+                ret = Compare(a_exp, [cmp], [b_exp])
                 if need_atomic:
                     tmp = Name(generate_name("tmp"))
                     return (
                         tmp,
-                        [*a_temp, *b_temp, (tmp, Compare(a_exp, [cmp], [b_exp]))],
+                        [*a_temp, *b_temp, (tmp, ret)],
                     )
                 else:
-                    return (Compare(a_exp, [cmp], [b_exp]), [*a_temp, *b_temp])
+                    return (ret, [*a_temp, *b_temp])
             case UnaryOp(USub(), v):
                 (v_exp, v_temp) = self.rco_exp(v, True)
 
+                ret = UnaryOp(USub(), v_exp)
                 if need_atomic:
                     tmp = Name(generate_name("tmp"))
-                    return (tmp, [*v_temp, (tmp, UnaryOp(USub(), v_exp))])
+                    return (tmp, [*v_temp, (tmp, ret)])
                 else:
-                    return (UnaryOp(USub(), v_exp), v_temp)
+                    return (ret, v_temp)
             case UnaryOp(Not(), v):
                 (v_exp, v_temp) = self.rco_exp(v, False)
 
+                ret = UnaryOp(Not(), v_exp)
                 if need_atomic:
                     tmp = Name(generate_name("tmp"))
-                    return (tmp, [*v_temp, (tmp, UnaryOp(Not(), v_exp))])
+                    return (tmp, [*v_temp, (tmp, ret)])
                 else:
-                    return (UnaryOp(Not(), v_exp), v_temp)
+                    return (ret, v_temp)
             case BinOp(a, Add(), b):
                 (a_exp, a_temp) = self.rco_exp(a, True)
                 (b_exp, b_temp) = self.rco_exp(b, True)
 
+                ret = BinOp(a_exp, Add(), b_exp)
                 if need_atomic:
                     tmp = Name(generate_name("tmp"))
-                    return (tmp, [*a_temp, *b_temp, (tmp, BinOp(a_exp, Add(), b_exp))])
+                    return (tmp, [*a_temp, *b_temp, (tmp, ret)])
                 else:
-                    return (BinOp(a_exp, Add(), b_exp), [*a_temp, *b_temp])
+                    return (ret, [*a_temp, *b_temp])
             case BinOp(a, Sub(), b):
                 (a_exp, a_temp) = self.rco_exp(a, True)
                 (b_exp, b_temp) = self.rco_exp(b, True)
 
+                ret = BinOp(a_exp, Sub(), b_exp)
                 if need_atomic:
                     tmp = Name(generate_name("tmp"))
-                    return (tmp, [*a_temp, *b_temp, (tmp, BinOp(a_exp, Sub(), b_exp))])
+                    return (tmp, [*a_temp, *b_temp, (tmp, ret)])
                 else:
-                    return (BinOp(a_exp, Sub(), b_exp), [*a_temp, *b_temp])
+                    return (ret, [*a_temp, *b_temp])
             case IfExp(cond, e1, e2):
                 (cond_exp, cond_temp) = self.rco_exp(cond, False)
                 (e1_exp, e1_temp) = self.rco_exp(e1, False)
                 (e2_exp, e2_temp) = self.rco_exp(e2, False)
 
+                ret = IfExp(cond_exp, e1_exp, e2_exp)
                 if need_atomic:
                     tmp = Name(generate_name("tmp"))
                     return (
@@ -254,23 +270,43 @@ class Compiler:
                             *cond_temp,
                             *e1_temp,
                             *e2_temp,
-                            (tmp, IfExp(cond_exp, e1_exp, e2_exp)),
+                            (tmp, ret),
                         ],
                     )
                 else:
                     return (
-                        IfExp(cond_exp, e1_exp, e2_exp),
+                        ret,
                         [*cond_temp, *e1_temp, *e2_temp],
                     )
+            case Subscript(e1, e2, Load()):
+                (e1_exp, e1_temp) = self.rco_exp(e1, True)
+                (e2_exp, e2_temp) = self.rco_exp(e2, True)
+
+                ret = Subscript(e1_exp, e2_exp, Load())
+                if need_atomic:
+                    tmp = Name(generate_name("tmp"))
+                    return (
+                        tmp,
+                        [*e1_temp, *e2_temp, (tmp, ret)],
+                    )
+                else:
+                    return (ret, [*e1_temp, *e2_temp])
+            case Allocate(_, _):
+                if need_atomic:
+                    alloc = Name(generate_name("alloc"))
+                    return (alloc, [(alloc, e)])
+                else:
+                    return (e, [])
             case Begin(stmts, e):
                 (e_exp, e_temp) = self.rco_exp(e, False)
 
+                ret = Begin(stmts, e_exp)
                 if need_atomic:
                     tmp = Name(generate_name("tmp"))
-                    return (tmp, [*e_temp, (tmp, Begin(stmts, e_exp))])
+                    return (tmp, [*e_temp, (tmp, ret)])
                 else:
                     # TODO:
-                    return (Begin(stmts, e_exp), e_temp)
+                    return (ret, e_temp)
             case _:
                 raise Exception("Unsupported expression: ", e)
 
@@ -278,31 +314,43 @@ class Compiler:
         match s:
             case Expr(Call(Name("print"), [exp])):
                 (e, e_temp) = self.rco_exp(exp, True)
-                stmts = [Assign([name], value) for name, value in e_temp]
+                stmts: list[stmt] = [Assign([name], value) for name, value in e_temp]
                 stmts.append(Expr(Call(Name("print"), [e])))
 
                 return stmts
             case Expr(exp):
                 (e, e_temp) = self.rco_exp(exp, False)
-                stmts = [Assign([name], value) for name, value in e_temp]
+                stmts: list[stmt] = [Assign([name], value) for name, value in e_temp]
                 stmts.append(Expr(e))
 
                 return stmts
             case Assign([Name(var)], exp):
                 (e, e_temp) = self.rco_exp(exp, False)
-                stmts = [Assign([name], value) for name, value in e_temp]
+                stmts: list[stmt] = [Assign([name], value) for name, value in e_temp]
                 stmts.append(Assign([Name(var)], e))
+
+                return stmts
+            case Assign([Subscript(value, idx, Store())], exp):
+                (e, e_temp) = self.rco_exp(exp, True)
+                (i, i_temp) = self.rco_exp(idx, True)
+                (v, v_temp) = self.rco_exp(value, True)
+
+                stmts: list[stmt] = [
+                    Assign([name], value)
+                    for name, value in itertools.chain(e_temp, i_temp, v_temp)
+                ]
+                stmts.append(Assign([v, i, Store()], e))
 
                 return stmts
             case If(exp, s1, s2):
                 (e, e_temp) = self.rco_exp(exp, False)
-                stmts = [Assign([name], value) for name, value in e_temp]
+                stmts: list[stmt] = [Assign([name], value) for name, value in e_temp]
 
-                s1_stmts = []
+                s1_stmts: list[stmt] = []
                 for s in s1:
                     s1_stmts.extend(self.rco_stmt(s))
 
-                s2_stmts = []
+                s2_stmts: list[stmt] = []
                 for s in s2:
                     s2_stmts.extend(self.rco_stmt(s))
 
@@ -311,15 +359,17 @@ class Compiler:
                 return stmts
             case While(exp, body, []):
                 (e, e_temp) = self.rco_exp(exp, False)
-                stmts = [Assign([name], value) for name, value in e_temp]
+                stmts: list[stmt] = [Assign([name], value) for name, value in e_temp]
 
-                body_rco = []
-                for stmt in body:
-                    body_rco.extend(self.rco_stmt(stmt))
+                body_rco: list[stmt] = []
+                for body_stmt in body:
+                    body_rco.extend(self.rco_stmt(body_stmt))
 
                 stmts.append(While(e, body_rco, []))
 
                 return stmts
+            case Collect(_):
+                return [s]
             case _:
                 raise Exception("Unsupported statement: ", s)
 
