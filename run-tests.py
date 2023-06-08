@@ -4,26 +4,29 @@ import compiler_register_allocator as compiler
 
 # import compiler
 import interp_Cif
-import interp_Lwhile
-import type_check_Lwhile
+import interp_Ltup
+import type_check_Ltup
 from utils import run_tests, run_one_test
 from interp_x86.eval_x86 import interp_x86
 
 compiler = compiler.Compiler()
 
-typecheck_Lwhile = type_check_Lwhile.TypeCheckLwhile().type_check
+typecheck_Ltup = type_check_Ltup.TypeCheckLtup().type_check
 
 typecheck_dict = {
-    "source": typecheck_Lwhile,
-    "shrink": typecheck_Lwhile,
-    "remove_complex_operands": typecheck_Lwhile,
+    "source": typecheck_Ltup,
+    "shrink": typecheck_Ltup,
+    "expose_allocation": typecheck_Ltup,
+    "remove_complex_operands": typecheck_Ltup,
 }
 
 interpCif = interp_Cif.InterpCif().interp
-interpLwhile = interp_Lwhile.InterpLwhile().interp
+interpLtup = interp_Ltup.InterpLtup().interp
+
 interp_dict = {
-    "shrink": interpLwhile,
-    "remove_complex_operands": interpLwhile,
+    "shrink": interpLtup,
+    "expose_allocation": interpLtup,
+    "remove_complex_operands": interpLtup,
     "explicate_control": interpCif,
     "select_instructions": interp_x86,
     "remove_jumps": interp_x86,

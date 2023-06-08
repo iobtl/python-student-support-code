@@ -2,6 +2,7 @@ import ast
 import os
 
 from ast import *
+from type_check_Ltup import TypeCheckLtup
 from typing import NamedTuple, Set
 from graph import DirectedAdjList
 
@@ -72,6 +73,113 @@ class Compiler:
                     return s
 
         return Module([_shrink_stmt(s) for s in p.body])
+
+    ############################################################################
+    # Expose Allocation
+    ############################################################################
+    def expose_exp(self, e: expr) -> expr:
+        def _match_expr_ty(e: expr) -> Type:
+            match e:
+                case Constant(v) if isinstance(v, bool):
+                    return BoolType()
+                case Constant(v) if isinstance(v, int):
+                    return IntType()
+                case Name(v):
+                    return getattr(v, "has_type", AnyType())
+                case Call(Name("input_int"), _):
+                    # TODO: function type?
+                    return IntType()
+                case UnaryOp(USub(), _) | BinOp(_, Add() | Sub(), _):
+                    return IntType()
+                case BoolOp(_, [_, _]) | UnaryOp(Not(), _) | Compare(_, [_], _):
+                    return BoolType()
+                case IfExp(_, body, _):
+                    # Both branches should return same type
+                    return _match_expr_ty(body)
+                case Begin(_, ret):
+                    return _match_expr_ty(ret)
+                case Allocate(_, ty):
+                    return ty
+                case Tuple(elts, _):
+                    return TupleType([_match_expr_ty(e) for e in elts])
+                case _:
+                    # TODO:
+                    return VoidType()
+
+        match e:
+            case Tuple(elts, Load()):
+                n_elts = len(elts)
+                bytes_required = 8 + n_elts * 8
+                tmp_names = [generate_name("tuple_tmp") for _ in elts]
+                inits = [Assign([Name(n)], e) for n, e in zip(tmp_names, elts)]
+
+                free_ptr_after_alloc = BinOp(
+                    GlobalValue("free_ptr"), Add(), Constant(bytes_required)
+                )
+                gc_check = Compare(
+                    free_ptr_after_alloc, [GtE()], [GlobalValue("fromspace_end")]
+                )
+                gc_if = If(gc_check, [Collect(bytes_required)], [])
+
+                alloc = Allocate(
+                    n_elts,
+                    getattr(
+                        e, "has_type", TupleType([_match_expr_ty(e) for e in elts])
+                    ),
+                )
+                tup = generate_name("tuple")
+                tup_assign = Assign([Name(tup)], alloc)
+
+                tup_inits = [
+                    Assign([Subscript(Name(tup), Constant(i), Store())], Name(tmp_name))
+                    for i, tmp_name in enumerate(tmp_names)
+                ]
+                return Begin(
+                    [
+                        *inits,
+                        gc_if,
+                        tup_assign,
+                        *tup_inits,
+                    ],
+                    Name(tup),
+                )
+            case _:
+                return e
+
+    def expose_stmt(self, s: stmt) -> stmt:
+        match s:
+            case Expr(Call(Name("print"), [e])):
+                return Expr(Call(Name("print"), [self.expose_exp(e)]))
+            case Expr(e):
+                return Expr(self.expose_exp(e))
+            case Assign([Name(n)], e):
+                return Assign([Name(n)], self.expose_exp(e))
+            case If(e, body, orelse):
+                return If(
+                    self.expose_exp(e),
+                    [self.expose_stmt(stmt) for stmt in body],
+                    [self.expose_stmt(stmt) for stmt in orelse],
+                )
+            case While(e, stmts, []):
+                return While(
+                    self.expose_exp(e), [self.expose_stmt(stmt) for stmt in stmts]
+                )
+            case _:
+                return s
+
+    def expose_allocation(self, p: Module) -> Module:
+        """Converts tuple creation into making conditional call to GC.
+
+        Possibly triggers garbage collection on top of the required allocation.
+        """
+        # HACK: running typechecker to populate has_type field of Tuple AST nodes...
+        TypeCheckLtup().type_check(p)
+
+        match p:
+            case Module(body):
+                return Module([self.expose_stmt(s) for s in body])
+            case _:
+                pass
 
     ############################################################################
     # Remove Complex Operands
