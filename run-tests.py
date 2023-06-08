@@ -3,7 +3,7 @@ import os
 import compiler_register_allocator as compiler
 
 # import compiler
-import interp_Cif
+import interp_Ctup
 import interp_Ltup
 import type_check_Ltup
 from utils import run_tests, run_one_test
@@ -20,14 +20,14 @@ typecheck_dict = {
     "remove_complex_operands": typecheck_Ltup,
 }
 
-interpCif = interp_Cif.InterpCif().interp
+interpCtup = interp_Ctup.InterpCtup().interp
 interpLtup = interp_Ltup.InterpLtup().interp
 
 interp_dict = {
     "shrink": interpLtup,
     "expose_allocation": interpLtup,
     "remove_complex_operands": interpLtup,
-    "explicate_control": interpCif,
+    "explicate_control": interpCtup,
     "select_instructions": interp_x86,
     "remove_jumps": interp_x86,
     "assign_homes": interp_x86,

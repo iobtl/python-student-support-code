@@ -435,8 +435,12 @@ class Compiler:
                 els_case = self.explicate_assign(els, lhs, cont_block, basic_blocks)
 
                 return self.explicate_pred(cond, thn_case, els_case, basic_blocks)
-            case Begin(_, _):
-                pass
+            case Begin(body, result):
+                pred = [Assign([lhs], result)] + cont.copy()
+                for i in range(len(body) - 1, -1, -1):
+                    pred = self.explicate_stmt(body[i], pred, basic_blocks)
+
+                return pred
             case _:
                 return [Assign([lhs], rhs)] + cont
 
@@ -479,8 +483,15 @@ class Compiler:
                     self.explicate_pred(orelse, thn_goto, els_goto, basic_blocks),
                     basic_blocks,
                 )
-            case Begin(_, _):
-                pass
+            case Begin(body, result):
+                pred = []
+                for i in range(len(body) - 1, -1, -1):
+                    pred = self.explicate_stmt(body[i], pred, basic_blocks)
+
+                return [
+                    *pred,
+                    If(Compare(result, [Eq()], [Constant(False)]), els_goto, thn_goto),
+                ]
             case _:
                 return [
                     If(Compare(cond, [Eq()], [Constant(False)]), els_goto, thn_goto)
@@ -493,7 +504,11 @@ class Compiler:
         match s:
             case Assign([lhs], rhs):
                 return self.explicate_assign(rhs, lhs, cont, basic_blocks)
-            case Expr(Call(Name("print"), [_])):
+            case (
+                Expr(Call(Name("print"), [_]))
+                | Expr(Call(Name("len"), [_]))
+                | Expr(Allocate(_, _))
+            ):
                 # TODO: verify
                 return [s, *cont]
             case Expr(v):
@@ -525,6 +540,8 @@ class Compiler:
                 basic_blocks[loop_block_label] = if_pred
 
                 return [Goto(loop_block_label)]
+            case Assign([Subscript(_, _, Store())], _) | Collect(_) | Expr():
+                return [s, *cont]
 
     def explicate_control(self, p: Module) -> CProgram:
         match p:
