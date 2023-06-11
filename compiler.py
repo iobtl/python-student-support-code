@@ -299,8 +299,9 @@ class Compiler:
                     return (e, [])
             case Begin(stmts, e):
                 (e_exp, e_temp) = self.rco_exp(e, False)
-
-                ret = Begin(stmts, e_exp)
+                ret = Begin(
+                    [s for body_stmt in stmts for s in self.rco_stmt(body_stmt)], e_exp
+                )
                 if need_atomic:
                     tmp = Name(generate_name("tmp"))
                     return (tmp, [*e_temp, (tmp, ret)])
@@ -339,7 +340,7 @@ class Compiler:
                     Assign([name], value)
                     for name, value in itertools.chain(e_temp, i_temp, v_temp)
                 ]
-                stmts.append(Assign([v, i, Store()], e))
+                stmts.append(Assign([Subscript(v, i, Store())], e))
 
                 return stmts
             case If(exp, s1, s2):
@@ -572,6 +573,9 @@ class Compiler:
                     raise Exception("Unsupported constant: ", e)
             case Name(n):
                 return Variable(n)
+            case GlobalValue(v):
+                # TODO: convert_x86 still takes in this AST instead of a new one that is an `arg`
+                return e
             case _:
                 raise Exception("Unsupported atomic expression: ", e)
 
@@ -589,7 +593,7 @@ class Compiler:
                 return [Jump(l)]
             case If(Compare(a, [cmp], [b]), [Goto(thn)], [Goto(els)]):
                 match cmp:
-                    case Eq():
+                    case Eq() | Is():
                         cmp_op = "e"
                     case Lt():
                         cmp_op = "l"
@@ -653,7 +657,7 @@ class Compiler:
                 mov_instr = Instr("movzbq", [Reg("al"), Variable(var)])
 
                 match cmp:
-                    case Eq():
+                    case Eq() | Is():
                         cmp_op = "sete"
                     case Lt():
                         cmp_op = "setl"
@@ -672,8 +676,81 @@ class Compiler:
                     Callq(label_name("read_int"), 0),
                     Instr("movq", [Reg("rax"), Variable(var)]),
                 ]
+            case Assign([Name(var)], Subscript(a, b, Load())):
+                match b:
+                    case Constant(v):
+                        offset = v
+                    case _:
+                        raise Exception("Subscript index must be a constant: ", s)
+
+                return [
+                    Instr("movq", [self.select_arg(a), Reg("r11")]),
+                    Instr("movq", [Deref("r11", 8 * (offset + 1)), self.select_arg(b)]),
+                ]
+            case Assign([Name(var)], Allocate(n, TupleType(tys))):
+                # Tag bits info:
+                # 0 (1): 1 If tuple has been copied to ToSpace. 0 means entire tag is a forwarding pointer
+                # 1-6 (6): Length of tuple
+                # 7-56 (50): Pointer mask for elements in the tuple. Note that number of elements limited to 50,
+                #            so we only need 50 bits.
+                return [
+                    Instr("movq", [GlobalValue("free_ptr"), Reg("r11")]),
+                    Instr(
+                        "addq",
+                        [Immediate(8 * (n + 1)), GlobalValue("free_ptr")],
+                    ),
+                    # TODO: better bit manipulation?
+                    Instr(
+                        "movq",
+                        [
+                            Immediate(
+                                (
+                                    int(
+                                        "1" * n
+                                        if any(
+                                            isinstance(ty, TupleType | ListType)
+                                            for ty in tys
+                                        )
+                                        else "0" * n
+                                    )
+                                    << 7
+                                )
+                                | (n << 1)
+                                | 1
+                            ),
+                            Deref("r11", 0),
+                        ],
+                    ),
+                    Instr("movq", [Reg("r11"), Variable(var)]),
+                ]
+            case Assign([Name(var)], Call(Name("len"), [atm])):
+                return [
+                    # TODO: Deref instead?
+                    Instr("movq", [self.select_arg(atm), Reg("r11")]),
+                    # Length represented in bits 1-6
+                    Instr("sarq", [Immediate(1), Reg("r11")]),
+                    Instr("andq", [Immediate(0x2F), Reg("r11")]),
+                    Instr("movq", [Reg("r11"), Variable(var)]),
+                ]
             case Assign([Name(var)], atm_exp):
                 return [Instr("movq", [self.select_arg(atm_exp), Variable(var)])]
+            case Assign([Subscript(a, b, Store())], v):
+                match b:
+                    case Constant(n):
+                        offset = n
+                    case _:
+                        raise Exception("Subscript index must be a constant: ", s)
+
+                return [
+                    Instr("movq", [self.select_arg(a), Reg("r11")]),
+                    Instr("movq", [self.select_arg(v), Deref("r11", 8 * (offset + 1))]),
+                ]
+            case Collect(n_bytes):
+                return [
+                    Instr("movq", [Reg("r15"), Reg("rdi")]),
+                    Instr("movq", [Immediate(n_bytes), Reg("rsi")]),
+                    Callq(label_name("collect"), 2),
+                ]
             case _:
                 raise Exception("Unrecognized statement: ", s)
 
