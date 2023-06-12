@@ -208,7 +208,24 @@ class X86Emulator:
         else:
             raise RuntimeError(f"Unknown arg in store_arg: {a}")
 
-    def eval_instrs(self, instrs, blocks, output):
+    def eval_instrs(self, instrs, blocks, output, init=False):
+        # Hack to insert initialize statement before prelude and conclusion compiled
+        if init:
+            rs_begin = 2000
+            rs_end = rs_begin + 16384
+
+            fromspace_begin = 100000
+            fromspace_end = fromspace_begin + 16384
+
+            self.global_vals = {
+                **self.global_vals,
+                "rootstack_begin": rs_begin,
+                "rootstack_end": rs_end,
+                "free_ptr": fromspace_begin,
+                "fromspace_begin": fromspace_begin,
+                "fromspace_end": fromspace_end,
+            }
+
         for instr in instrs:
             self.log(f"Evaluating instruction: {instr.pretty()}")
             if instr.data == "pushq":
