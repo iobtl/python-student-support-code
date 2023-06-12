@@ -40,7 +40,7 @@ FUNCTION_REG = [
     Reg("r9"),
 ]
 
-ALLOCATION = {
+NUM_REG_ALLOCATION = {
     0: Reg("rcx"),
     1: Reg("rdx"),
     2: Reg("rsi"),
@@ -52,6 +52,22 @@ ALLOCATION = {
     8: Reg("r12"),
     9: Reg("r13"),
     10: Reg("r14"),
+}
+
+REG_NUM_ALLOCATION = {
+    # Caller-saved
+    Reg("rcx"): 0,
+    Reg("rdx"): 1,
+    Reg("rsi"): 2,
+    Reg("rdi"): 3,
+    Reg("r8"): 4,
+    Reg("r9"): 5,
+    Reg("r10"): 6,
+    # Callee-saved
+    Reg("rbx"): 7,
+    Reg("r12"): 8,
+    Reg("r13"): 9,
+    Reg("r14"): 10,
 }
 
 
@@ -165,9 +181,19 @@ class Compiler(compiler.Compiler):
     def color_graph(
         self, graph: UndirectedAdjList, variables: Set[location]
     ) -> tuple[dict[location, int], Set[location]]:
-        vertices = set(graph.vertices())
-        saturations = {i: set() for i in vertices}
-        reg_ints = {i for i in range(len(ALLOCATION))}
+        saturations = {}
+        vertices = set(i for i in graph.vertices() if type(i) is Variable)
+
+        for v in vertices:
+            sats_init: set[int] = set()
+            for adj in graph.adjacent(v):
+                if type(adj) is Reg and adj in REG_NUM_ALLOCATION:
+                    sats_init.add(REG_NUM_ALLOCATION[adj])
+
+            saturations[v] = sats_init.copy()
+            sats_init.clear()
+
+        reg_ints = {i for i in range(len(NUM_REG_ALLOCATION))}
         allocations = {}
         spilled = set()
 
@@ -190,9 +216,10 @@ class Compiler(compiler.Compiler):
             else:
                 reg_alloc = min(available_regs)
                 allocations[highest_saturation_vertex] = reg_alloc
-                # Update saturations of adjacent nodes
+                # Update saturations of adjacent nodes if they are variables
                 for adj in graph.adjacent(highest_saturation_vertex):
-                    saturations[adj].add(reg_alloc)
+                    if type(adj) is Variable:
+                        saturations[adj].add(reg_alloc)
 
             vertices.remove(highest_saturation_vertex)
 
@@ -229,7 +256,7 @@ class Compiler(compiler.Compiler):
         (colored, spilled) = self.color_graph(graph, set())
 
         # Map first k colors to the k registers and the remaining to the stack
-        variable_reg_alloc = {v: ALLOCATION[i] for v, i in colored.items()}
+        variable_reg_alloc = {v: NUM_REG_ALLOCATION[i] for v, i in colored.items()}
         # TODO: Spilled vars that don't interfere with each other can be allocated same stack
         # position?
         for i, spilled_var in enumerate(spilled):
