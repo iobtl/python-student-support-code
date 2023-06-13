@@ -735,14 +735,13 @@ class Compiler:
                     ),
                     Instr("movq", [Reg("r11"), Variable(var)]),
                 ]
-            case Assign([Name(var)], Call(Name("len"), [atm])):
+            case Assign([Name(var)], Call(Name("len"), [Name(v)])):
                 return [
-                    # TODO: Deref instead?
-                    Instr("movq", [self.select_arg(atm), Reg("r11")]),
+                    Instr("movq", [Variable(v), Reg("r11")]),
                     # Length represented in bits 1-6
-                    Instr("sarq", [Immediate(1), Reg("r11")]),
-                    Instr("andq", [Immediate(0x2F), Reg("r11")]),
-                    Instr("movq", [Reg("r11"), Variable(var)]),
+                    Instr("movq", [Deref("r11", 0), Variable(var)]),
+                    Instr("sarq", [Immediate(1), Variable(var)]),
+                    Instr("andq", [Immediate(0x2F), Variable(var)]),
                 ]
             case Assign([Name(var)], atm_exp):
                 return [Instr("movq", [self.select_arg(atm_exp), Variable(var)])]
