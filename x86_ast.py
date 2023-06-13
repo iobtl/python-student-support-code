@@ -11,6 +11,7 @@ from utils import dedent, indent, indent_stmt, label_name
 class X86Program:
     body: dict[str, list[instr]] | list[instr]
     frame_size: int = 0
+    root_spills: int = 0
 
     def __str__(self):
         result = ""

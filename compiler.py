@@ -4,6 +4,7 @@ import os
 
 from ast import *
 from type_check_Ltup import TypeCheckLtup
+from type_check_Ctup import TypeCheckCtup
 from typing import NamedTuple, Set
 from graph import DirectedAdjList
 
@@ -54,7 +55,7 @@ class Compiler:
                 case Compare(e1, [cmp], [e2]):
                     return Compare(_shrink_exp(e1), [cmp], [_shrink_exp(e2)])
                 case IfExp(e, s1, s2):
-                    return IfExp(_shrink_exp(e), s1, s2)
+                    return IfExp(_shrink_exp(e), _shrink_exp(s1), _shrink_exp(s2))
                 case _:
                     return e
 
@@ -68,8 +69,12 @@ class Compiler:
                     )
                 case Assign(name, e):
                     return Assign(name, _shrink_exp(e))
+                case Expr(Call(Name("print"), [e])):
+                    return Expr(Call(Name("print"), [_shrink_exp(e)]))
                 case Expr(e):
                     return Expr(_shrink_exp(e))
+                case While(e, stmts, []):
+                    return While(_shrink_exp(e), [_shrink_stmt(s) for s in stmts], [])
                 case _:
                     return s
 
@@ -112,7 +117,10 @@ class Compiler:
                 n_elts = len(elts)
                 bytes_required = 8 + n_elts * 8
                 tmp_names = [generate_name("tuple_tmp") for _ in elts]
-                inits = [Assign([Name(n)], e) for n, e in zip(tmp_names, elts)]
+                inits = [
+                    Assign([Name(n)], self.expose_exp(e))
+                    for n, e in zip(tmp_names, elts)
+                ]
 
                 free_ptr_after_alloc = BinOp(
                     GlobalValue("free_ptr"), Add(), Constant(bytes_required)
@@ -163,7 +171,7 @@ class Compiler:
                 )
             case While(e, stmts, []):
                 return While(
-                    self.expose_exp(e), [self.expose_stmt(stmt) for stmt in stmts]
+                    self.expose_exp(e), [self.expose_stmt(stmt) for stmt in stmts], []
                 )
             case _:
                 return s
@@ -464,7 +472,7 @@ class Compiler:
             case Constant(False):
                 return els
             case UnaryOp(Not(), v):
-                return [If(Compare(v, [Eq()], [Constant(False)]), thn_goto, els_goto)]
+                return self.explicate_pred(v, els_goto, thn_goto, basic_blocks)
             case IfExp(cond_e, body, orelse):
                 # Example: y + 2 if (x == 0 if x < 1 else x == 2) else y + 10
                 # Transformed:
@@ -493,6 +501,11 @@ class Compiler:
                     *pred,
                     If(Compare(result, [Eq()], [Constant(False)]), els_goto, thn_goto),
                 ]
+            case Subscript(a, b, Load()):
+                cond_tmp = Name(generate_name("if_tmp"))
+                return [Assign([cond_tmp], cond)] + self.explicate_pred(
+                    cond_tmp, thn_goto, els_goto, basic_blocks
+                )
             case _:
                 return [
                     If(Compare(cond, [Eq()], [Constant(False)]), els_goto, thn_goto)
@@ -574,8 +587,7 @@ class Compiler:
             case Name(n):
                 return Variable(n)
             case GlobalValue(v):
-                # TODO: convert_x86 still takes in this AST instead of a new one that is an `arg`
-                return e
+                return Global(v)
             case _:
                 raise Exception("Unsupported atomic expression: ", e)
 
@@ -685,7 +697,7 @@ class Compiler:
 
                 return [
                     Instr("movq", [self.select_arg(a), Reg("r11")]),
-                    Instr("movq", [Deref("r11", 8 * (offset + 1)), self.select_arg(b)]),
+                    Instr("movq", [Deref("r11", 8 * (offset + 1)), Variable(var)]),
                 ]
             case Assign([Name(var)], Allocate(n, TupleType(tys))):
                 # Tag bits info:
@@ -694,10 +706,10 @@ class Compiler:
                 # 7-56 (50): Pointer mask for elements in the tuple. Note that number of elements limited to 50,
                 #            so we only need 50 bits.
                 return [
-                    Instr("movq", [GlobalValue("free_ptr"), Reg("r11")]),
+                    Instr("movq", [Global("free_ptr"), Reg("r11")]),
                     Instr(
                         "addq",
-                        [Immediate(8 * (n + 1)), GlobalValue("free_ptr")],
+                        [Immediate(8 * (n + 1)), Global("free_ptr")],
                     ),
                     # TODO: better bit manipulation?
                     Instr(
@@ -749,18 +761,24 @@ class Compiler:
                 return [
                     Instr("movq", [Reg("r15"), Reg("rdi")]),
                     Instr("movq", [Immediate(n_bytes), Reg("rsi")]),
-                    Callq(label_name("collect"), 2),
+                    Callq("collect", 2),
                 ]
             case _:
                 raise Exception("Unrecognized statement: ", s)
 
     def select_instructions(self, p: CProgram) -> X86Program:
-        return X86Program(
+        tc_ctup = TypeCheckCtup()
+        tc_ctup.type_check(p)
+        var_types = p.var_types
+        p = X86Program(
             {
                 label: [instr for stmt in stmts for instr in self.select_stmt(stmt)]
                 for label, stmts in p.body.items()
-            }
+            },
         )
+        p.var_types = var_types
+
+        return p
 
     ############################################################################
     # Remove Jumps

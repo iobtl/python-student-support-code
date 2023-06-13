@@ -62,7 +62,7 @@ class X86Emulator:
         if label_name("main") in blocks.keys():
             self.eval_instrs(blocks[label_name("main")], blocks, output)
         elif label_name("start") in blocks.keys():
-            self.eval_instrs(blocks[label_name("start")], blocks, output)
+            self.eval_instrs(blocks[label_name("start")], blocks, output, True)
 
         self.log("FINAL STATE:")
         if self.logging:
@@ -225,6 +225,7 @@ class X86Emulator:
                 "fromspace_begin": fromspace_begin,
                 "fromspace_end": fromspace_end,
             }
+            self.registers["r15"] = rs_begin
 
         for instr in instrs:
             self.log(f"Evaluating instruction: {instr.pretty()}")
@@ -267,6 +268,18 @@ class X86Emulator:
                 v1 = self.eval_arg(a1)
                 v2 = self.eval_arg(a2)
                 self.store_arg(a2, xor64(v1, v2))
+
+            elif instr.data == "andq":
+                a1, a2 = instr.children
+                v1 = self.eval_arg(a1)
+                v2 = self.eval_arg(a2)
+                self.store_arg(a2, and64(v1, v2))
+
+            elif instr.data == "sarq":
+                a1, a2 = instr.children
+                v1 = self.eval_arg(a1)
+                v2 = self.eval_arg(a2)
+                self.store_arg(a2, v2 >> v1)
 
             elif instr.data == "negq":
                 a1 = instr.children[0]
