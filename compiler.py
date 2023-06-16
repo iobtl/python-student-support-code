@@ -3,10 +3,9 @@ import itertools
 import os
 
 from ast import *
-from type_check_Ltup import TypeCheckLtup
 from type_check_Lfun import TypeCheckLfun
 from type_check_Ctup import TypeCheckCtup
-from typing import NamedTuple, Set
+from typing import NamedTuple
 from graph import DirectedAdjList
 
 from utils import *
@@ -389,7 +388,7 @@ class Compiler:
         Possibly triggers garbage collection on top of the required allocation.
         """
         # HACK: running typechecker to populate has_type field of Tuple AST nodes...
-        TypeCheckLtup().type_check(p)
+        TypeCheckLfun().type_check(p)
 
         match p:
             case Module(body):
