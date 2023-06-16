@@ -4,6 +4,7 @@ import os
 
 from ast import *
 from type_check_Ltup import TypeCheckLtup
+from type_check_Lfun import TypeCheckLfun
 from type_check_Ctup import TypeCheckCtup
 from typing import NamedTuple, Set
 from graph import DirectedAdjList
@@ -40,6 +41,14 @@ class Compiler:
     ############################################################################
 
     def shrink(self, p: Module) -> Module:
+        """Minor modifications to aid later passes.
+
+        Currently does two things:
+        1. Converts all `and` and `or` expressions to `IfExp` expressions
+        2. Introduces explicit `main` function that wraps all top-level statements
+           in the interpreted module.
+        """
+
         def _shrink_exp(e: expr) -> expr:
             match e:
                 case BoolOp(And(), [e1, e2]):
@@ -78,7 +87,205 @@ class Compiler:
                 case _:
                     return s
 
-        return Module([_shrink_stmt(s) for s in p.body])
+        function_defs = []
+        top_level_stmts = []
+        for s in p.body:
+            if type(s) == FunctionDef:
+                function_defs.append(s)
+            else:
+                top_level_stmts.append(s)
+
+        return Module(
+            [
+                *function_defs,
+                FunctionDef("main", [], top_level_stmts, [], VoidType()),
+            ]
+        )
+
+    ############################################################################
+    # Reveal Functions
+    ############################################################################
+
+    def reveal_functions(self, p: Module) -> Module:
+        """Converts Name(f) to FunRef(f, n) for function names."""
+
+        def _reveal_exp(e: expr) -> expr:
+            match e:
+                case Name(v):
+                    arity = function_names.get(v)
+                    if arity:
+                        return FunRef(v, arity)
+                    else:
+                        return e
+                case Call(n, args):
+                    return Call(_reveal_exp(n), [_reveal_exp(arg) for arg in args])
+                case UnaryOp(op, exp):
+                    return UnaryOp(op, _reveal_exp(exp))
+                case BinOp(a, op, b):
+                    return BinOp(_reveal_exp(a), op, _reveal_exp(b))
+                case Compare(a, op, [b]):
+                    return Compare(_reveal_exp(a), op, _reveal_exp(b))
+                case IfExp(cond, a, b):
+                    return IfExp(_reveal_exp(cond), _reveal_exp(a), _reveal_exp(b))
+                case Tuple(exprs, Load()):
+                    return Tuple([_reveal_exp(expr) for expr in exprs], Load())
+                case Subscript(exp, const, Load()):
+                    return Subscript(_reveal_exp(exp), const, Load())
+                case _:
+                    return e
+
+        def _reveal_stmt(s: stmt) -> stmt:
+            match s:
+                case FunctionDef("main", _, stmts, _, ret):
+                    return FunctionDef(
+                        "main", [], [_reveal_stmt(stmt) for stmt in stmts], [], ret
+                    )
+                case Expr(e):
+                    return Expr(_reveal_exp(e))
+                case Assign(lhs, e):
+                    return Assign(lhs, _reveal_exp(e))
+                case If(cond, body, orelse):
+                    return If(
+                        _reveal_exp(cond),
+                        [_reveal_stmt(a) for a in body],
+                        [_reveal_stmt(b) for b in orelse],
+                    )
+                case While(cond, body, []):
+                    return While(_reveal_exp(cond), [_reveal_stmt(a) for a in body], [])
+                case Return(e):
+                    if e:
+                        return Return(_reveal_exp(e))
+                    else:
+                        return s
+                case _:
+                    return s
+
+        function_names = {}
+        match p:
+            case Module(body):
+                # Identify functions
+                for s in body:
+                    match s:
+                        case FunctionDef(name, args, _, _, _):
+                            function_names[name] = len(args)
+                        case _:
+                            pass
+
+                return Module([_reveal_stmt(s) for s in body])
+            case _:
+                pass
+
+    ############################################################################
+    # Limit Functions
+    ############################################################################
+
+    def limit_functions(self, p: Module) -> Module:
+        """Packs excess parameters (6th onwards) into a tuple."""
+
+        def _replace_names_expr(e: expr, replacement: dict[str, expr]) -> expr:
+            match e:
+                case Name(n):
+                    return replacement.get(n, e)
+                case Call(n, args):
+                    return Call(
+                        _replace_names_expr(n, replacement),
+                        [_replace_names_expr(a, replacement) for a in args],
+                    )
+                case UnaryOp(op, exp):
+                    return UnaryOp(op, _replace_names_expr(exp, replacement))
+                case BinOp(a, op, b):
+                    return BinOp(
+                        _replace_names_expr(a, replacement),
+                        op,
+                        _replace_names_expr(b, replacement),
+                    )
+                case BoolOp(op, [a, b]):
+                    return BoolOp(
+                        op,
+                        [
+                            _replace_names_expr(a, replacement),
+                            _replace_names_expr(b, replacement),
+                        ],
+                    )
+                case Compare(a, op, [b]):
+                    return Compare(
+                        _replace_names_expr(a, replacement),
+                        op,
+                        [_replace_names_expr(b, replacement)],
+                    )
+                case IfExp(cond, a, b):
+                    return IfExp(
+                        _replace_names_expr(cond, replacement),
+                        _replace_names_expr(a, replacement),
+                        _replace_names_expr(b, replacement),
+                    )
+                case Tuple(exprs, Load()):
+                    return Tuple(
+                        [_replace_names_expr(exp, replacement) for exp in exprs], Load()
+                    )
+                case Subscript(e, const, Load()):
+                    return Subscript(_replace_names_expr(e, replacement), const, Load())
+                case _:
+                    return e
+
+        def _replace_names_stmt(s: stmt, replacement: dict[str, expr]) -> stmt:
+            match s:
+                case Expr(e):
+                    return Expr(_replace_names_expr(e, replacement))
+                case Assign(lhs, e):
+                    return Assign(lhs, _replace_names_expr(e, replacement))
+                case If(cond, body, orelse):
+                    return If(
+                        _replace_names_expr(cond, replacement),
+                        [_replace_names_stmt(a, replacement) for a in body],
+                        [_replace_names_stmt(b, replacement) for b in orelse],
+                    )
+                case While(cond, body, []):
+                    return While(
+                        _replace_names_expr(cond, replacement),
+                        [_replace_names_stmt(a, replacement) for a in body],
+                        [],
+                    )
+                case Return(e):
+                    if e:
+                        return Return(_replace_names_expr(e, replacement))
+                    else:
+                        return s
+                case _:
+                    return s
+
+        new_p = []
+        for s in p.body:
+            match s:
+                case FunctionDef(name, args, body, dec, ret):
+                    if len(args) < 6:
+                        new_p.append(s)
+                        continue
+
+                    packed_args = Tuple(args[5:], Load())
+                    replacement: dict[str, expr] = {
+                        n.arg: Subscript(packed_args, Constant(i), Load())
+                        for i, n in enumerate(args[5:])
+                    }
+                    new_body = [_replace_names_stmt(b, replacement) for b in body]
+
+                    new_p.append(
+                        FunctionDef(name, [*args[:5], packed_args], new_body, dec, ret)
+                    )
+                case Call(n, args):
+                    new_p.append(
+                        Call(
+                            n,
+                            [
+                                *args[:5],
+                                Tuple(args[5:], Load()),
+                            ],
+                        )
+                    )
+                case _:
+                    new_p.append(s)
+
+        return Module(new_p)
 
     ############################################################################
     # Expose Allocation

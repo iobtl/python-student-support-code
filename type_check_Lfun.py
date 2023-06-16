@@ -13,7 +13,7 @@ class TypeCheckLfun(TypeCheckLarray):
             case FunctionType(ps1, rt1):
                 match t2:
                     case FunctionType(ps2, rt2):
-                        for (p1, p2) in zip(ps1, ps2):
+                        for p1, p2 in zip(ps1, ps2):
                             self.check_type_equal(p1, p2, e)
                         self.check_type_equal(rt1, rt2, e)
                     case _:
@@ -79,7 +79,7 @@ class TypeCheckLfun(TypeCheckLarray):
                 args_t = [self.type_check_exp(arg, env) for arg in args]
                 match func_t:
                     case FunctionType(params_t, return_t):
-                        for (arg_t, param_t) in zip(args_t, params_t):
+                        for arg_t, param_t in zip(args_t, params_t):
                             self.check_type_equal(param_t, arg_t, e)
                         return return_t
                     case _:

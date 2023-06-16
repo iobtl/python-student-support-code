@@ -4,29 +4,34 @@ import compiler_register_allocator as compiler
 
 # import compiler
 import interp_Ctup
-import interp_Ltup
-import type_check_Ltup
+import interp_Lfun
+import type_check_Lfun
+import type_check_Ctup
 from utils import run_tests, run_one_test
 from interp_x86.eval_x86 import interp_x86
 
 compiler = compiler.Compiler()
 
-typecheck_Ltup = type_check_Ltup.TypeCheckLtup().type_check
+typecheck_Lfun = type_check_Lfun.TypeCheckLfun().type_check
+typecheck_Ctup = type_check_Ctup.TypeCheckCtup().type_check
 
 typecheck_dict = {
-    "source": typecheck_Ltup,
-    "shrink": typecheck_Ltup,
-    "expose_allocation": typecheck_Ltup,
-    "remove_complex_operands": typecheck_Ltup,
+    "source": typecheck_Lfun,
+    "shrink": typecheck_Lfun,
+    "expose_allocation": typecheck_Lfun,
+    "remove_complex_operands": typecheck_Lfun,
+    "explicate_control": typecheck_Ctup,
 }
 
 interpCtup = interp_Ctup.InterpCtup().interp
-interpLtup = interp_Ltup.InterpLtup().interp
+interpLfun = interp_Lfun.InterpLfun().interp
 
 interp_dict = {
-    "shrink": interpLtup,
-    "expose_allocation": interpLtup,
-    "remove_complex_operands": interpLtup,
+    "shrink": interpLfun,
+    "reveal_functions": interpLfun,
+    # "limit_functions": interpLfun,
+    "expose_allocation": interpLfun,
+    "remove_complex_operands": interpLfun,
     "explicate_control": interpCtup,
     "select_instructions": interp_x86,
     "remove_jumps": interp_x86,
