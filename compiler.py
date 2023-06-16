@@ -261,10 +261,10 @@ class Compiler:
                         new_p.append(s)
                         continue
 
-                    packed_args = Tuple(args[5:], Load())
+                    packed_args = ("tup", TupleType([ty for _, ty in args[5:]]))
                     replacement: dict[str, expr] = {
-                        n.arg: Subscript(packed_args, Constant(i), Load())
-                        for i, n in enumerate(args[5:])
+                        name: Subscript(packed_args, Constant(i), Load())
+                        for i, (name, _) in enumerate(args[5:])
                     }
                     new_body = [_replace_names_stmt(b, replacement) for b in body]
 
@@ -358,11 +358,47 @@ class Compiler:
                     ],
                     Name(tup),
                 )
+            case UnaryOp(op, exp):
+                return UnaryOp(op, self.expose_exp(exp))
+            case BinOp(a, op, b):
+                return BinOp(
+                    self.expose_exp(a),
+                    op,
+                    self.expose_exp(b),
+                )
+            case BoolOp(op, [a, b]):
+                return BoolOp(
+                    op,
+                    [
+                        self.expose_exp(a),
+                        self.expose_exp(b),
+                    ],
+                )
+            case Compare(a, op, [b]):
+                return Compare(
+                    self.expose_exp(a),
+                    op,
+                    [self.expose_exp(b)],
+                )
+            case IfExp(cond, a, b):
+                return IfExp(
+                    self.expose_exp(cond),
+                    self.expose_exp(a),
+                    self.expose_exp(b),
+                )
+            case Subscript(e, const, Load()):
+                return Subscript(self.expose_exp(e), const, Load())
+            case Call(func, args):
+                return Call(func, [self.expose_exp(arg) for arg in args])
             case _:
                 return e
 
     def expose_stmt(self, s: stmt) -> stmt:
         match s:
+            case FunctionDef(var, params, stmts, [], ret):
+                return FunctionDef(
+                    var, params, [self.expose_stmt(stmt) for stmt in stmts], [], ret
+                )
             case Expr(Call(Name("print"), [e])):
                 return Expr(Call(Name("print"), [self.expose_exp(e)]))
             case Expr(e):
@@ -379,6 +415,8 @@ class Compiler:
                 return While(
                     self.expose_exp(e), [self.expose_stmt(stmt) for stmt in stmts], []
                 )
+            case Return(e):
+                return Return(self.expose_exp(e) if e else None)
             case _:
                 return s
 
@@ -402,7 +440,7 @@ class Compiler:
 
     def rco_exp(self, e: expr, need_atomic: bool) -> tuple[expr, Temporaries]:
         match e:
-            case Constant(_) | Name(_) | GlobalValue(_):
+            case Constant(_) | Name(_) | GlobalValue(_) | FunRef(_, _):
                 return (e, [])
             case Call(Name("input_int"), []):
                 ret = e
@@ -416,9 +454,25 @@ class Compiler:
                 ret = Call(Name("len"), [e_exp])
                 if need_atomic:
                     i = Name(generate_name("len"))
-                    return (i, [(i, ret)])
+                    return (i, [*e_temp, (i, ret)])
                 else:
                     return (ret, e_temp)
+            case Call(func, args):
+                (f_exp, f_temp) = self.rco_exp(func, True)
+
+                args_exps = []
+                args_temps = []
+                for arg in args:
+                    (arg_exp, arg_temp) = self.rco_exp(arg, True)
+                    args_exps.append(arg_exp)
+                    args_temps.extend(arg_temp)
+
+                ret = Call(f_exp, args_exps)
+                if need_atomic:
+                    i = Name(generate_name("call"))
+                    return (i, [*f_temp, *args_temps, (i, ret)])
+                else:
+                    return (ret, [*f_temp, *args_temps])
             case Compare(a, [cmp], [b]):
                 (a_exp, a_temp) = self.rco_exp(a, True)
                 (b_exp, b_temp) = self.rco_exp(b, True)
@@ -527,6 +581,17 @@ class Compiler:
 
     def rco_stmt(self, s: stmt) -> list[stmt]:
         match s:
+            # All statements should have been wrapped in a FunctionDef
+            case FunctionDef(var, params, stmts, [], ret):
+                return [
+                    FunctionDef(
+                        var,
+                        params,
+                        [st for stmt in stmts for st in self.rco_stmt(stmt)],
+                        [],
+                        ret,
+                    )
+                ]
             case Expr(Call(Name("print"), [exp])):
                 (e, e_temp) = self.rco_exp(exp, True)
                 stmts: list[stmt] = [Assign([name], value) for name, value in e_temp]
@@ -585,6 +650,16 @@ class Compiler:
                 return stmts
             case Collect(_):
                 return [s]
+            case Return(exp):
+                if not exp:
+                    return [Return(exp)]
+
+                (e, e_temp) = self.rco_exp(exp, False)
+                stmts: list[stmt] = [Assign([name], value) for name, value in e_temp]
+
+                stmts.append(Return(e))
+
+                return stmts
             case _:
                 raise Exception("Unsupported statement: ", s)
 
