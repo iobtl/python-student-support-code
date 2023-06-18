@@ -94,10 +94,13 @@ class Compiler:
             else:
                 top_level_stmts.append(s)
 
+        if type(top_level_stmts[-1]) != Return:
+            top_level_stmts.append(Return(Constant(0)))
+
         return Module(
             [
                 *function_defs,
-                FunctionDef("main", [], top_level_stmts, [], VoidType()),
+                FunctionDef("main", [], top_level_stmts, [], IntType()),
             ]
         )
 
@@ -680,7 +683,7 @@ class Compiler:
 
     def create_block(
         self, stmts: list[stmt], basic_blocks: dict[Label, list[stmt]]
-    ) -> list[Goto]:
+    ) -> list[stmt]:
         """De-lineates a basic block."""
         match stmts:
             case [Goto(_)]:
@@ -782,11 +785,18 @@ class Compiler:
                     *pred,
                     If(Compare(result, [Eq()], [Constant(False)]), els_goto, thn_goto),
                 ]
-            case Subscript(a, b, Load()):
+            case Subscript(_, _, Load()):
                 cond_tmp = Name(generate_name("if_tmp"))
                 return [Assign([cond_tmp], cond)] + self.explicate_pred(
                     cond_tmp, thn_goto, els_goto, basic_blocks
                 )
+            case Call(_, _):
+                cond_tmp = Name(generate_name("if_tmp"))
+                return [Assign([cond_tmp], cond)] + self.explicate_pred(
+                    cond_tmp, thn_goto, els_goto, basic_blocks
+                )
+            case FunRef(_):
+                raise Exception("FunRef cannot be a boolean")
             case _:
                 return [
                     If(Compare(cond, [Eq()], [Constant(False)]), els_goto, thn_goto)
@@ -797,6 +807,14 @@ class Compiler:
     ) -> list[stmt]:
         """Generates code for statements."""
         match s:
+            case FunctionDef(var, params, stmts, [], ret):
+                cont_block = self.create_block(cont, basic_blocks)
+                stmt_pred = cont_block.copy()
+
+                for i in range(len(stmts) - 1, -1, -1):
+                    stmt_pred = self.explicate_stmt(stmts[i], stmt_pred, basic_blocks)
+
+                return [FunctionDef(var, params, stmt_pred, [], ret)]
             case Assign([lhs], rhs):
                 return self.explicate_assign(rhs, lhs, cont, basic_blocks)
             case (
@@ -804,7 +822,6 @@ class Compiler:
                 | Expr(Call(Name("len"), [_]))
                 | Expr(Allocate(_, _))
             ):
-                # TODO: verify
                 return [s, *cont]
             case Expr(v):
                 return self.explicate_effect(v, cont, basic_blocks)
@@ -838,19 +855,74 @@ class Compiler:
             case Assign([Subscript(_, _, Store())], _) | Collect(_) | Expr():
                 return [s, *cont]
 
-    def explicate_control(self, p: Module) -> CProgram:
+    def explicate_tail(
+        self, e: expr, basic_blocks: dict[Label, list[stmt]]
+    ) -> list[stmt]:
+        """Handles expressions in tail contexts, usually Return statements."""
+        match e:
+            # Translate to TC
+            case Call(func, args):
+                return [TailCall(func, args)]
+            case IfExp(cond, body, orelse):
+                return self.explicate_pred(
+                    cond, [Return(body)], [Return(orelse)], basic_blocks
+                )
+            case Begin(body, ret):
+                pred: list[stmt] = [Return(ret)]
+                for i in range(len(body) - 1, -1, -1):
+                    pred = self.explicate_stmt(body[i], pred, basic_blocks)
+
+                return pred
+            case _:
+                return [Return(e)]
+
+    def explicate_control(self, p: Module) -> CProgramDefs:
+        """Keep track of control flow and construct basic blocks."""
         match p:
             case Module(body):
-                new_body = [Return(Constant(0))]
-                basic_blocks = {}
+                program_defs: list[stmt] = []
                 # Process from back to front so that result of each processed stmt
                 # is stored in basic_blocks to be used as the *compiled* continuation parameter
                 # for the previous statement
-                for i in range(len(body) - 1, -1, -1):
-                    new_body = self.explicate_stmt(body[i], new_body, basic_blocks)
-                basic_blocks[label_name("start")] = new_body
+                for _def in body:
+                    basic_blocks = {}
+                    match _def:
+                        case FunctionDef(var, params, body, [], ret):
+                            if len(body) == 0:
+                                program_defs.append(_def)
+                                continue
 
-                return CProgram(basic_blocks)
+                            match body[-1]:
+                                case Return(e):
+                                    new_body = self.explicate_tail(
+                                        e if e else Constant(0), basic_blocks
+                                    )
+                                case _:
+                                    new_body = self.explicate_stmt(
+                                        body[-1], [Return(Constant(0))], basic_blocks
+                                    )
+
+                            for i in range(len(body) - 2, -1, -1):
+                                new_body = self.explicate_stmt(
+                                    body[i], new_body, basic_blocks
+                                )
+
+                            program_defs.append(
+                                FunctionDef(
+                                    var,
+                                    params,
+                                    {
+                                        label_name(var + "_start"): new_body,
+                                        **basic_blocks,
+                                    },
+                                    [],
+                                    ret,
+                                )
+                            )
+                        case _:
+                            pass
+
+                return CProgramDefs(program_defs)
 
     ############################################################################
     # Select Instructions

@@ -3,27 +3,27 @@ import os
 import compiler_register_allocator as compiler
 
 # import compiler
-import interp_Ctup
+import interp_Cfun
 import interp_Lfun
 import type_check_Lfun
-import type_check_Ctup
+import type_check_Cfun
 from utils import run_tests, run_one_test
 from interp_x86.eval_x86 import interp_x86
 
 compiler = compiler.Compiler()
 
 typecheck_Lfun = type_check_Lfun.TypeCheckLfun().type_check
-typecheck_Ctup = type_check_Ctup.TypeCheckCtup().type_check
+typecheck_Cfun = type_check_Cfun.TypeCheckCfun().type_check
 
 typecheck_dict = {
     "source": typecheck_Lfun,
     "shrink": typecheck_Lfun,
     "expose_allocation": typecheck_Lfun,
     "remove_complex_operands": typecheck_Lfun,
-    "explicate_control": typecheck_Ctup,
+    "explicate_control": typecheck_Cfun,
 }
 
-interpCtup = interp_Ctup.InterpCtup().interp
+interpCfun = interp_Cfun.InterpCfun().interp
 interpLfun = interp_Lfun.InterpLfun().interp
 
 interp_dict = {
@@ -32,7 +32,7 @@ interp_dict = {
     # "limit_functions": interpLfun,
     "expose_allocation": interpLfun,
     "remove_complex_operands": interpLfun,
-    "explicate_control": interpCtup,
+    "explicate_control": interpCfun,
     "select_instructions": interp_x86,
     "remove_jumps": interp_x86,
     "assign_homes": interp_x86,
