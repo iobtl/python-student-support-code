@@ -3,8 +3,9 @@ import itertools
 import os
 
 from ast import *
+from compiler_utils import *
 from type_check_Lfun import TypeCheckLfun
-from type_check_Ctup import TypeCheckCtup
+from type_check_Cfun import TypeCheckCfun
 from typing import NamedTuple
 from graph import DirectedAdjList
 
@@ -1096,6 +1097,30 @@ class Compiler:
                     Instr("sarq", [Immediate(1), Variable(var)]),
                     Instr("andq", [Immediate(0x2F), Variable(var)]),
                 ]
+            case Assign([Name(var)], FunRef(label, _)):
+                return [Instr("leaq", [Global(label), Variable(var)])]
+            case Assign([Name(var)], Call(func, args)):
+                args_movs = [
+                    Instr("movq", [self.select_arg(a), FUNCTION_REG[i]])
+                    for i, a in enumerate(args)
+                ]
+
+                return [
+                    *args_movs,
+                    IndirectCallq(Variable(func), len(args)),
+                    Instr("movq", [Reg("rax"), Variable(var)]),
+                ]
+            case Assign([Name(var)], TailCall(func, args)):
+                args_movs = [
+                    Instr("movq", [self.select_arg(a), FUNCTION_REG[i]])
+                    for i, a in enumerate(args)
+                ]
+
+                return [
+                    *args_movs,
+                    TailJmp(Variable(func), len(args)),
+                    Instr("movq", [Reg("rax"), Variable(var)]),
+                ]
             case Assign([Name(var)], atm_exp):
                 return [Instr("movq", [self.select_arg(atm_exp), Variable(var)])]
             case Assign([Subscript(a, b, Store())], v):
@@ -1118,19 +1143,57 @@ class Compiler:
             case _:
                 raise Exception("Unrecognized statement: ", s)
 
-    def select_instructions(self, p: CProgram) -> X86Program:
-        tc_ctup = TypeCheckCtup()
-        tc_ctup.type_check(p)
-        var_types = p.var_types
-        p = X86Program(
-            {
-                label: [instr for stmt in stmts for instr in self.select_stmt(stmt)]
-                for label, stmts in p.body.items()
-            },
-        )
-        p.var_types = var_types
+    def select_tail(self, t: stmt, func_name: str) -> list[instr]:
+        match t:
+            case Return(e):
+                if e:
+                    return [
+                        Instr("movq", [self.select_arg(e), Reg("rax")]),
+                        Jump(label_name(func_name + "_conclusion")),
+                    ]
+                else:
+                    return [
+                        Jump(label_name(func_name + "_conclusion")),
+                    ]
+            case _:
+                return self.select_stmt(t)
 
-        return p
+    def select_instructions(self, p: CProgramDefs) -> X86ProgramDefs:
+        tc_cfun = TypeCheckCfun()
+        tc_cfun.type_check(p)
+
+        match p:
+            case CProgramDefs(defs):
+                final_defs = []
+                for d in defs:
+                    match d:
+                        case FunctionDef(var, params, blocks, [], ret):
+                            args_movs = [
+                                Instr("movq", [Variable(v), FUNCTION_REG[i]])
+                                for i, (v, _) in enumerate(params)
+                            ]
+                            new_blocks = {
+                                l: [self.select_stmt(stmt) for stmt in stmts]
+                                for l, stmts in blocks.items()
+                            }
+                            new_blocks[label_name(var + "_start")] = [
+                                *args_movs,
+                                *new_blocks.get(label_name(var + "_start"), []),
+                            ]
+
+                            final_defs.append(
+                                FunctionDef(
+                                    var,
+                                    [],
+                                    new_blocks,
+                                    # ret,
+                                    IntType(),
+                                )
+                            )
+
+                return X86ProgramDefs(final_defs)
+            case _:
+                pass
 
     ############################################################################
     # Remove Jumps
