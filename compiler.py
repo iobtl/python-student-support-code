@@ -23,16 +23,19 @@ class Compiler:
     # Utils
     ############################################################################
     @staticmethod
-    def build_cfg(p: X86Program) -> DirectedAdjList:
+    def build_cfg(p: X86ProgramDefs) -> DirectedAdjList:
         cfg = DirectedAdjList()
-        for label, block in p.body.items():
-            cfg.add_vertex(label)
+        for _def in p.defs:
+            match _def:
+                case FunctionDef(_, _, blocks, _, _):
+                    for label, block in blocks.items():
+                        cfg.add_vertex(label)
 
-            for instr in block:
-                match instr:
-                    # TODO: add conclusion
-                    case Jump(l) | JumpIf(_, l) if l != "_conclusion":
-                        cfg.add_edge(label, l)
+                        for instr in block:
+                            match instr:
+                                # TODO: add conclusion
+                                case Jump(l) | JumpIf(_, l) if l != "_conclusion":
+                                    cfg.add_edge(label, l)
 
         return cfg
 
@@ -1306,7 +1309,7 @@ class Compiler:
     # Remove Jumps
     ############################################################################
 
-    def remove_jumps(self, p: X86Program) -> X86Program:
+    def remove_jumps(self, p: X86ProgramDefs) -> X86ProgramDefs:
         class MergeSet(NamedTuple):
             base: Label
             base_jmp_idx: int
@@ -1315,29 +1318,47 @@ class Compiler:
         cfg = Compiler.build_cfg(p)
 
         in_edges = []
-        merge_into: list[MergeSet] = []
-        for label, block in p.body.items():
-            for idx, instr in enumerate(block):
-                match instr:
-                    case Jump(l) if l != label_name("conclusion"):
-                        for e in cfg.in_edges(l):
-                            in_edges.append(e)
-                        if len(in_edges) == 1:
-                            merge_into.append(MergeSet(label, idx, l))
+        # Function definition to merge sets
+        merge_into: dict[str, list[MergeSet]] = {}
+        merge_sets = []
+        conclusion_name = label_name("conclusion")
+
+        for _def in p.defs:
+            match _def:
+                case FunctionDef(var, params, blocks, [], ret):
+                    for label, block in blocks.items():
+                        for idx, instr in enumerate(block):
+                            match instr:
+                                case Jump(
+                                    l
+                                ) if l != conclusion_name and l != label_name(
+                                    var
+                                ) + conclusion_name:
+                                    for e in cfg.in_edges(l):
+                                        in_edges.append(e)
+                                    if len(in_edges) == 1:
+                                        merge_sets.append(MergeSet(label, idx, l))
+
+                    merge_into[var] = merge_sets.copy()
+                    merge_sets.clear()
 
             in_edges.clear()
 
-        for m in merge_into:
-            # TODO: potentially O(n^2)
-            (base, base_jmp_idx, to_merge) = m
-            old_base_instrs = p.body[base]
-            p.body[base] = (
-                old_base_instrs[:base_jmp_idx]
-                + p.body[to_merge]
-                + old_base_instrs[base_jmp_idx + 1 :]
-            )
+        for fun_def, merge_sets in merge_into.items():
+            # TODO(speed): potentially O(n^2)
+            fun_blocks: FunctionDef = [
+                f for f in p.defs if type(f) == FunctionDef and str(f.name) == fun_def
+            ][0]
+            for m in merge_sets:
+                (base, base_jmp_idx, to_merge) = m
+                old_base_instrs = fun_blocks.body[base]
+                fun_blocks.body[base] = (
+                    old_base_instrs[:base_jmp_idx]
+                    + fun_blocks.body[to_merge]
+                    + old_base_instrs[base_jmp_idx + 1 :]
+                )
 
-            del p.body[to_merge]
+                del fun_blocks.body[to_merge]
 
         return p
 
