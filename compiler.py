@@ -113,15 +113,17 @@ class Compiler:
         """Converts Name(f) to FunRef(f, n) for function names."""
 
         def _reveal_exp(e: expr) -> expr:
+            # TODO: handle anonymous functions in Call args?
+            # i.e. if we have a function foo(f: Callable[int]): return f
+            # Need to identity f as FunRef as well
             match e:
-                case Name(v):
-                    arity = function_names.get(v)
-                    if arity:
-                        return FunRef(v, arity)
-                    else:
-                        return e
-                case Call(n, args):
-                    return Call(_reveal_exp(n), [_reveal_exp(arg) for arg in args])
+                case Name(n):
+                    return FunRef(n, function_names[n]) if n in function_names else e
+                case Call(Name(n), args):
+                    return Call(
+                        FunRef(n, len(args)) if n not in builtin_functions else Name(n),
+                        [_reveal_exp(arg) for arg in args],
+                    )
                 case UnaryOp(op, exp):
                     return UnaryOp(op, _reveal_exp(exp))
                 case BinOp(a, op, b):
@@ -139,9 +141,9 @@ class Compiler:
 
         def _reveal_stmt(s: stmt) -> stmt:
             match s:
-                case FunctionDef("main", _, stmts, _, ret):
+                case FunctionDef(var, params, stmts, _, ret):
                     return FunctionDef(
-                        "main", [], [_reveal_stmt(stmt) for stmt in stmts], [], ret
+                        var, params, [_reveal_stmt(stmt) for stmt in stmts], [], ret
                     )
                 case Expr(e):
                     return Expr(_reveal_exp(e))
@@ -444,8 +446,16 @@ class Compiler:
 
     def rco_exp(self, e: expr, need_atomic: bool) -> tuple[expr, Temporaries]:
         match e:
-            case Constant(_) | Name(_) | GlobalValue(_) | FunRef(_, _):
+            case Constant(_) | Name(_) | GlobalValue(_):
                 return (e, [])
+            case FunRef(label, arity):
+                # Want to generate assignment statement so we do a
+                # leaq later on
+                if need_atomic:
+                    i = Name(generate_name("fun"))
+                    return (i, [(i, FunRef(label, arity))])
+                else:
+                    return (e, [])
             case Call(Name("input_int"), []):
                 ret = e
                 if need_atomic:
@@ -929,6 +939,16 @@ class Compiler:
     # Select Instructions
     ############################################################################
 
+    def _select_len(self, v: expr, loc: location) -> list[instr]:
+        return [
+            Instr("movq", [self.select_arg(v), Reg("r11")]),
+            *[
+                Instr("movq", [Deref("r11", 0), loc]),
+                Instr("sarq", [Immediate(1), loc]),
+                Instr("andq", [Immediate(0x2F), loc]),
+            ],
+        ]
+
     def select_arg(self, e: expr) -> arg:
         match e:
             case Constant(c):
@@ -942,15 +962,160 @@ class Compiler:
                 return Variable(n)
             case GlobalValue(v):
                 return Global(v)
+            case FunRef(_, _):
+                return e
             case _:
                 raise Exception("Unsupported atomic expression: ", e)
 
+    def select_expr(self, e: expr) -> list[instr]:
+        match e:
+            case Compare(a, [cmp], b):
+                cmp_instr = Instr("cmpq", [self.select_arg(a), self.select_arg(b)])
+
+                match cmp:
+                    case Eq() | Is():
+                        cmp_op = "sete"
+                    case Lt():
+                        cmp_op = "setl"
+                    case LtE():
+                        cmp_op = "setle"
+                    case Gt():
+                        cmp_op = "setg"
+                    case GtE():
+                        cmp_op = "setge"
+                    case _:
+                        raise Exception("Unrecognized comparison operator: ", s)
+
+                return [cmp_instr, Instr(cmp_op, [Reg("al")])]
+            case Subscript(a, b, Load()):
+                return [
+                    Instr("movq", [self.select_arg(a), Reg("r11")]),
+                ]
+            case Allocate(n, TupleType(tys)):
+                # Tag bits info:
+                # 0 (1): 1 If tuple has been copied to ToSpace. 0 means entire tag is a forwarding pointer
+                # 1-6 (6): Length of tuple
+                # 7-56 (50): Pointer mask for elements in the tuple. Note that number of elements limited to 50,
+                #            so we only need 50 bits.
+                return [
+                    Instr("movq", [Global("free_ptr"), Reg("r11")]),
+                    Instr(
+                        "addq",
+                        [Immediate(8 * (n + 1)), Global("free_ptr")],
+                    ),
+                    # TODO: better bit manipulation?
+                    Instr(
+                        "movq",
+                        [
+                            Immediate(
+                                (
+                                    int(
+                                        "1" * n
+                                        if any(
+                                            isinstance(ty, TupleType | ListType)
+                                            for ty in tys
+                                        )
+                                        else "0" * n
+                                    )
+                                    << 7
+                                )
+                                | (n << 1)
+                                | 1
+                            ),
+                            Deref("r11", 0),
+                        ],
+                    ),
+                ]
+            case Call(func, args) | TailCall(func, args):
+                match func:
+                    case Name("input_int"):
+                        return [
+                            Callq(label_name("read_int"), 0),
+                        ]
+                    case Name(label):
+                        # Anonymous function (since first-class functions allowed)
+                        args_movs = [
+                            Instr("movq", [self.select_arg(a), FUNCTION_REG[i]])
+                            for i, a in enumerate(args)
+                        ]
+
+                        return [
+                            *args_movs,
+                            IndirectCallq(Variable(label), len(args))
+                            if type(e) is Call
+                            else TailJump(Variable(label), len(args)),
+                        ]
+                    case _:
+                        raise Exception("Trying to call invalid function", e)
+            case _:
+                raise Exception(
+                    "This expression needs more context; should be handled at top-level",
+                    e,
+                )
+
     def select_stmt(self, s: stmt) -> list[instr]:
         match s:
-            case Return(e):
-                if e:
+            case Return(UnaryOp(op, atm)):
+                if str(op) == "-":
+                    unary_instr = "negq"
+                elif str(op) == "not":
+                    unary_instr = "xorq"
+                else:
+                    raise Exception("Unsupported unary op: s", s)
+
+                return [
+                    Instr("movq", [self.select_arg(atm), Reg("rax")]),
+                    Instr(unary_instr, [Reg("rax")]),
+                    Jump(label_name("conclusion")),
+                ]
+            case Return(BinOp(a, op, b)):
+                if str(op) == "+":
+                    op_instr = "addq"
+                elif str(op) == "-":
+                    op_instr = "subq"
+                else:
+                    raise Exception("Unsupported binary op: ", s)
+
+                return [
+                    Instr("movq", [self.select_arg(a), Reg("rax")]),
+                    Instr(op_instr, [self.select_arg(b), Reg("rax")]),
+                    Jump(label_name("conclusion")),
+                ]
+            case Return(Compare(_)):
+                return [
+                    *self.select_expr(s.value),
+                    Instr("movzbq", [Reg("al"), Reg("rax")]),
+                    Jump(label_name("conclusion")),
+                ]
+            case Return(Subscript(a, b, Load())):
+                match b:
+                    case Constant(v):
+                        offset = v
+                    case _:
+                        raise Exception("Subscript index must be a constant: ", s)
+
+                return [
+                    *self.select_expr(s.value),
+                    Instr("movq", [Deref("r11", 8 * (offset + 1)), Reg("rax")]),
+                    Jump(label_name("conclusion")),
+                ]
+            case Return(Allocate(_)):
+                return [
+                    *self.select_expr(s.value),
+                    Instr("movq", [Reg("r11"), Reg("rax")]),
+                    Jump(label_name("conclusion")),
+                ]
+            case Return(Call(Name("len"), [Name(v)])):
+                return self._select_len(Name(v), Reg("rax"))
+            case Return(Call(_, _)):
+                return [
+                    *self.select_expr(s.value),
+                    Jump(label_name("conclusion")),
+                ]
+            case Return(atm_exp):
+                if atm_exp:
                     return [
-                        Instr("movq", [self.select_arg(e), Reg("rax")]),
+                        Instr("movq", [self.select_arg(atm_exp), Reg("rax")]),
                         Jump(label_name("conclusion")),
                     ]
                 else:
@@ -986,6 +1151,8 @@ class Compiler:
                     Instr("movq", [self.select_arg(atm), Reg("rdi")]),
                     Callq(label_name("print_int"), 1),
                 ]
+            case Expr(e):
+                return self.select_expr(e)
             case Assign([Name(var)], BinOp(atm_a, op, atm_b)):
                 if str(op) == "+":
                     op_instr = "addq"
@@ -1005,10 +1172,15 @@ class Compiler:
                         Instr(op_instr, [b_arg, Variable(var)]),
                     ]
             case Assign([Name(var)], UnaryOp(USub(), atm)):
-                return [
-                    Instr("movq", [self.select_arg(atm), Variable(var)]),
-                    Instr("negq", [Variable(var)]),
-                ]
+                negq_instr = Instr("negq", [Variable(var)])
+
+                if str(atm) == str(var):
+                    return [negq_instr]
+                else:
+                    return [
+                        Instr("movq", [self.select_arg(atm), Variable(var)]),
+                        negq_instr,
+                    ]
             case Assign([Name(var)], UnaryOp(Not(), atm)):
                 xorq_instr = Instr("xorq", [Immediate(1), Variable(var)])
                 if str(atm) == str(var):
@@ -1019,28 +1191,9 @@ class Compiler:
                         xorq_instr,
                     ]
             case Assign([Name(var)], Compare(a, [cmp], [b])):
-                cmp_instr = Instr("cmpq", [self.select_arg(a), self.select_arg(b)])
-                mov_instr = Instr("movzbq", [Reg("al"), Variable(var)])
-
-                match cmp:
-                    case Eq() | Is():
-                        cmp_op = "sete"
-                    case Lt():
-                        cmp_op = "setl"
-                    case LtE():
-                        cmp_op = "setle"
-                    case Gt():
-                        cmp_op = "setg"
-                    case GtE():
-                        cmp_op = "setge"
-                    case _:
-                        raise Exception("Unrecognized comparison operator: ", s)
-
-                return [cmp_instr, Instr(cmp_op, [Reg("al")]), mov_instr]
-            case Assign([Name(var)], Call(Name("input_int"), [])):
                 return [
-                    Callq(label_name("read_int"), 0),
-                    Instr("movq", [Reg("rax"), Variable(var)]),
+                    *self.select_expr(s.value),
+                    Instr("movzbq", [Reg("al"), Variable(var)]),
                 ]
             case Assign([Name(var)], Subscript(a, b, Load())):
                 match b:
@@ -1050,43 +1203,12 @@ class Compiler:
                         raise Exception("Subscript index must be a constant: ", s)
 
                 return [
-                    Instr("movq", [self.select_arg(a), Reg("r11")]),
+                    *self.select_expr(s.value),
                     Instr("movq", [Deref("r11", 8 * (offset + 1)), Variable(var)]),
                 ]
-            case Assign([Name(var)], Allocate(n, TupleType(tys))):
-                # Tag bits info:
-                # 0 (1): 1 If tuple has been copied to ToSpace. 0 means entire tag is a forwarding pointer
-                # 1-6 (6): Length of tuple
-                # 7-56 (50): Pointer mask for elements in the tuple. Note that number of elements limited to 50,
-                #            so we only need 50 bits.
+            case Assign([Name(var)], Allocate(_)):
                 return [
-                    Instr("movq", [Global("free_ptr"), Reg("r11")]),
-                    Instr(
-                        "addq",
-                        [Immediate(8 * (n + 1)), Global("free_ptr")],
-                    ),
-                    # TODO: better bit manipulation?
-                    Instr(
-                        "movq",
-                        [
-                            Immediate(
-                                (
-                                    int(
-                                        "1" * n
-                                        if any(
-                                            isinstance(ty, TupleType | ListType)
-                                            for ty in tys
-                                        )
-                                        else "0" * n
-                                    )
-                                    << 7
-                                )
-                                | (n << 1)
-                                | 1
-                            ),
-                            Deref("r11", 0),
-                        ],
-                    ),
+                    *self.select_expr(s.value),
                     Instr("movq", [Reg("r11"), Variable(var)]),
                 ]
             case Assign([Name(var)], Call(Name("len"), [Name(v)])):
@@ -1097,30 +1219,14 @@ class Compiler:
                     Instr("sarq", [Immediate(1), Variable(var)]),
                     Instr("andq", [Immediate(0x2F), Variable(var)]),
                 ]
+            case Assign([Name(var)], Call(_, _)):
+                return [
+                    *self.select_expr(s.value),
+                    Instr("movq", [Reg("rax"), Variable(var)]),
+                ]
             case Assign([Name(var)], FunRef(label, _)):
+                # TODO: resolve block names properly...
                 return [Instr("leaq", [Global(label), Variable(var)])]
-            case Assign([Name(var)], Call(func, args)):
-                args_movs = [
-                    Instr("movq", [self.select_arg(a), FUNCTION_REG[i]])
-                    for i, a in enumerate(args)
-                ]
-
-                return [
-                    *args_movs,
-                    IndirectCallq(Variable(func), len(args)),
-                    Instr("movq", [Reg("rax"), Variable(var)]),
-                ]
-            case Assign([Name(var)], TailCall(func, args)):
-                args_movs = [
-                    Instr("movq", [self.select_arg(a), FUNCTION_REG[i]])
-                    for i, a in enumerate(args)
-                ]
-
-                return [
-                    *args_movs,
-                    TailJmp(Variable(func), len(args)),
-                    Instr("movq", [Reg("rax"), Variable(var)]),
-                ]
             case Assign([Name(var)], atm_exp):
                 return [Instr("movq", [self.select_arg(atm_exp), Variable(var)])]
             case Assign([Subscript(a, b, Store())], v):
@@ -1143,21 +1249,6 @@ class Compiler:
             case _:
                 raise Exception("Unrecognized statement: ", s)
 
-    def select_tail(self, t: stmt, func_name: str) -> list[instr]:
-        match t:
-            case Return(e):
-                if e:
-                    return [
-                        Instr("movq", [self.select_arg(e), Reg("rax")]),
-                        Jump(label_name(func_name + "_conclusion")),
-                    ]
-                else:
-                    return [
-                        Jump(label_name(func_name + "_conclusion")),
-                    ]
-            case _:
-                return self.select_stmt(t)
-
     def select_instructions(self, p: CProgramDefs) -> X86ProgramDefs:
         tc_cfun = TypeCheckCfun()
         tc_cfun.type_check(p)
@@ -1169,13 +1260,28 @@ class Compiler:
                     match d:
                         case FunctionDef(var, params, blocks, [], ret):
                             args_movs = [
-                                Instr("movq", [Variable(v), FUNCTION_REG[i]])
+                                Instr("movq", [FUNCTION_REG[i], Variable(v)])
                                 for i, (v, _) in enumerate(params)
                             ]
                             new_blocks = {
-                                l: [self.select_stmt(stmt) for stmt in stmts]
+                                l: [
+                                    instr
+                                    for stmt in stmts
+                                    for instr in self.select_stmt(stmt)
+                                ]
                                 for l, stmts in blocks.items()
                             }
+                            # Patch conclusion name per block
+                            for l, ss in new_blocks.items():
+                                match ss[-1]:
+                                    case Jump("_conclusion"):
+                                        new_blocks[l] = [
+                                            *ss[:-1],
+                                            Jump(f"{label_name(var)}_conclusion"),
+                                        ]
+                                    case _:
+                                        continue
+
                             new_blocks[label_name(var + "_start")] = [
                                 *args_movs,
                                 *new_blocks.get(label_name(var + "_start"), []),
@@ -1186,8 +1292,9 @@ class Compiler:
                                     var,
                                     [],
                                     new_blocks,
-                                    # ret,
-                                    IntType(),
+                                    [],
+                                    ret,
+                                    # IntType(),
                                 )
                             )
 

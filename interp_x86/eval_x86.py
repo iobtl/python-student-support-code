@@ -63,6 +63,8 @@ class X86Emulator:
             self.eval_instrs(blocks[label_name("main")], blocks, output)
         elif label_name("start") in blocks.keys():
             self.eval_instrs(blocks[label_name("start")], blocks, output, True)
+        elif label_name("main_start") in blocks.keys():
+            self.eval_instrs(blocks[label_name("main_start")], blocks, output, True)
 
         self.log("FINAL STATE:")
         if self.logging:
@@ -181,6 +183,16 @@ class X86Emulator:
         elif a.data == "global_val_a":
             loc, reg = a.children
             assert str(reg) == "rip", a
+
+            # Hack for when prelude and conclusion for every function has not bee
+            # generated yet.
+            loc = str(loc)
+            if (
+                loc not in self.global_vals
+                and label_name(loc) + "_start" in self.global_vals
+            ):
+                return self.global_vals[label_name(loc) + "_start"]
+
             return self.global_vals[str(loc)]
         else:
             raise RuntimeError(f"Unknown arg in eval_arg: {a}")
@@ -305,10 +317,11 @@ class X86Emulator:
                 elif instr.data == "jge" and self.registers["EFLAGS"] in ["g", "e"]:
                     perform_jump = True
 
+                conclusion_name = label_name("conclusion")
                 if perform_jump:
                     if target in blocks.keys():
                         self.eval_instrs(blocks[target], blocks, output)
-                    elif target == label_name("conclusion"):
+                    elif target == conclusion_name or conclusion_name in target:
                         return
                     else:
                         raise Exception("jump to invalid target " + target)
