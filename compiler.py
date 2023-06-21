@@ -1290,16 +1290,16 @@ class Compiler:
                                 *new_blocks.get(label_name(var + "_start"), []),
                             ]
 
-                            final_defs.append(
-                                FunctionDef(
-                                    var,
-                                    [],
-                                    new_blocks,
-                                    [],
-                                    ret,
-                                    # IntType(),
-                                )
+                            new_def = FunctionDef(
+                                var,
+                                [],
+                                new_blocks,
+                                [],
+                                ret,
+                                # IntType(),
                             )
+                            new_def.var_types = getattr(d, "var_types")
+                            final_defs.append(new_def)
 
                 return X86ProgramDefs(final_defs)
             case _:
@@ -1325,7 +1325,7 @@ class Compiler:
 
         for _def in p.defs:
             match _def:
-                case FunctionDef(var, params, blocks, [], ret):
+                case FunctionDef(var, _, blocks, [], _):
                     for label, block in blocks.items():
                         for idx, instr in enumerate(block):
                             match instr:

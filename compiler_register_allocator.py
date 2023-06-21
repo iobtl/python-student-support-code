@@ -1,6 +1,7 @@
 import compiler
 from compiler import Block, Label
 from compiler_utils import *
+import copy
 
 from graph import DirectedAdjList, UndirectedAdjList, topological_sort, transpose
 from dataflow_analysis import analyze_dataflow
@@ -29,6 +30,9 @@ class Compiler(compiler.Compiler):
             case Callq(_, num_args):
                 # TODO: handle spills
                 return set(FUNCTION_REG[0:num_args])
+            case IndirectCallq(target, num_args) | TailJump(target, num_args):
+                # TODO: handle spills
+                return set([*FUNCTION_REG[0:num_args], target])
             case _:
                 return set()
 
@@ -38,24 +42,31 @@ class Compiler(compiler.Compiler):
                 return set((arg,))
             case Instr(op, [arg]) if op not in ["negq", "pushq"]:
                 return set((arg,))
-            case Callq(_, _):
+            case Callq(_, _) | IndirectCallq(_, _) | TailJump(_, _):
                 # All caller-saved registers may be written to
                 return set(CALLER_SAVED_REG)
             case _:
                 return set()
 
-    def uncover_live(self, p: X86Program) -> dict[tuple[Label, instr], Set[location]]:
+    def uncover_live(
+        self, p: X86ProgramDefs
+    ) -> dict[tuple[Label, instr], Set[location]]:
         """Returns mapping for each instruction to its live-after set."""
+        blocks = p.blocks
 
         def _transfer(label: Label, live_after_block: set) -> set:
             """Transfer function for dataflow analysis.
 
-            Note that live_after is simply the live_before set for a block which
+            Note that live_after is simply khe live_before set for a block which
             this current block jumps to.
             Returns live-before set for the analyzed block.
             Also updates live-before and live-after sets for every instruction.
             """
-            block = p.body[label]
+            block = blocks.get(label, [])
+            if len(block) == 0:
+                # e.g. conclusion block might not have been created yet
+                return set()
+
             last_instr = block[-1]
             live_before = self.read_vars(block[-1])
             match last_instr:
@@ -95,12 +106,12 @@ class Compiler(compiler.Compiler):
     ############################################################################
 
     def build_interference(
-        self, p: X86Program, live_after: dict[tuple[Label, instr], Set[location]]
+        self, p: X86ProgramDefs, live_after: dict[tuple[Label, instr], Set[location]]
     ) -> UndirectedAdjList:
         var_types = p.var_types
         i_graph = UndirectedAdjList()
 
-        for label, block in p.body.items():
+        for label, block in p.blocks.items():
             for instr in block:
                 match instr:
                     case Instr("movq" | "movzb", [arg1, arg2]):
@@ -187,31 +198,48 @@ class Compiler(compiler.Compiler):
 
         return (allocations, spilled)
 
-    def allocate_registers(self, p: X86Program, graph: UndirectedAdjList) -> X86Program:
+    def allocate_registers(
+        self, p: X86ProgramDefs, graph: UndirectedAdjList
+    ) -> X86ProgramDefs:
         def replace_args(
             mapping: Callable[[arg], location], root_spills: int
-        ) -> X86Program:
-            new_instrs = {}
+        ) -> X86ProgramDefs:
+            new_defs = []
 
-            for label, block in p.body.items():
-                instrs = []
-                for instr in block:
-                    match instr:
-                        case Instr(op, args):
-                            instrs.append(
-                                Instr(
-                                    op,
-                                    [mapping(a) for a in args],
-                                )
-                            )
-                        case _:
-                            instrs.append(instr)
+            for _def in p.defs:
+                match _def:
+                    case FunctionDef(var, params, blocks, [], ret):
+                        new_instrs = {}
+                        for label, block in blocks.items():
+                            instrs = []
+                            for instr in block:
+                                match instr:
+                                    case Instr(op, args):
+                                        instrs.append(
+                                            Instr(
+                                                op,
+                                                [mapping(a) for a in args],
+                                            )
+                                        )
+                                    case IndirectCallq(func, arity):
+                                        instrs.append(
+                                            IndirectCallq(mapping(func), arity)
+                                        )
+                                    case TailJump(func, arity):
+                                        instrs.append(TailJump(mapping(func), arity))
+                                    case _:
+                                        instrs.append(instr)
 
-                new_instrs[label] = instrs
+                            new_instrs[label] = instrs
+
+                        new_def = copy.copy(_def)
+                        new_def.body = new_instrs
+                        new_defs.append(new_def)
+
             num_vars = len(graph.vertices())
             frame_size = (num_vars + 1) * 8 if num_vars % 2 != 0 else num_vars * 8
 
-            return X86Program(new_instrs, frame_size, root_spills)
+            return X86ProgramDefs(new_defs, frame_size, root_spills)
 
         if graph.num_vertices() == 0:
             # Only one temporary

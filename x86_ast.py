@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+import functools
 from typing import Iterable
 
 from utils import dedent, indent, indent_stmt, label_name
@@ -38,9 +39,38 @@ class X86Program:
 @dataclass
 class X86ProgramDefs:
     defs: list[ast.FunctionDef]
+    frame_size: int = 0
+    root_spills: int = 0
 
     def __str__(self):
         return "\n".join([str(d) for d in self.defs])
+
+    @property
+    def blocks(self):
+        if not hasattr(self, "_blocks"):
+            self._blocks = {
+                k: v
+                for _def in self.defs
+                if type(_def) is ast.FunctionDef
+                for k, v in _def.body.items()
+            }
+
+        return self._blocks
+
+    @property
+    def var_types(self):
+        if not hasattr(self.defs[0], "var_types"):
+            raise Exception("Type checking not done, var_types not present")
+
+        if not hasattr(self, "_var_types"):
+            self._var_types = {
+                k: v
+                for _def in self.defs
+                if type(_def) is ast.FunctionDef
+                for k, v in _def.var_types.items()
+            }
+
+        return self._var_types
 
 
 class instr:
