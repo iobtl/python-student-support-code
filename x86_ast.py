@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 from dataclasses import dataclass
-import functools
 from typing import Iterable
 
 from utils import dedent, indent, indent_stmt, label_name
@@ -40,7 +40,7 @@ class X86Program:
 class X86ProgramDefs:
     defs: list[ast.FunctionDef]
     frame_size: int = 0
-    root_spills: int = 0
+    root_spills: dict[str, int] = dataclasses.field(default_factory=dict)
 
     def __str__(self):
         return "\n".join([str(d) for d in self.defs])

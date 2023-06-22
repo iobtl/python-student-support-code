@@ -27,14 +27,15 @@ class Compiler:
         cfg = DirectedAdjList()
         for _def in p.defs:
             match _def:
-                case FunctionDef(_, _, blocks, _, _):
+                case FunctionDef(var, _, blocks, _, _):
                     for label, block in blocks.items():
                         cfg.add_vertex(label)
 
                         for instr in block:
                             match instr:
-                                # TODO: add conclusion
-                                case Jump(l) | JumpIf(_, l) if l != "_conclusion":
+                                case Jump(l) | JumpIf(_, l) if l != label_name(
+                                    f"{var}_conclusion"
+                                ):
                                     cfg.add_edge(label, l)
 
         return cfg
@@ -116,15 +117,16 @@ class Compiler:
         """Converts Name(f) to FunRef(f, n) for function names."""
 
         def _reveal_exp(e: expr) -> expr:
-            # TODO: handle anonymous functions in Call args?
-            # i.e. if we have a function foo(f: Callable[int]): return f
-            # Need to identity f as FunRef as well
             match e:
                 case Name(n):
-                    return FunRef(n, function_names[n]) if n in function_names else e
-                case Call(Name(n), args):
+                    return (
+                        FunRef(n, function_names[n])
+                        if n not in builtin_functions and n in function_names
+                        else e
+                    )
+                case Call(n, args):
                     return Call(
-                        FunRef(n, len(args)) if n not in builtin_functions else Name(n),
+                        _reveal_exp(n),
                         [_reveal_exp(arg) for arg in args],
                     )
                 case UnaryOp(op, exp):
@@ -1031,9 +1033,9 @@ class Compiler:
                 ]
             case Call(func, args) | TailCall(func, args):
                 match func:
-                    case Name("input_int"):
+                    case Name(n) if n in builtin_functions:
                         return [
-                            Callq(label_name("read_int"), 0),
+                            Callq(label_name(n), len(args)),
                         ]
                     case Name(label):
                         # Anonymous function (since first-class functions allowed)

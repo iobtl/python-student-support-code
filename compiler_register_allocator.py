@@ -5,7 +5,7 @@ import copy
 
 from graph import DirectedAdjList, UndirectedAdjList, topological_sort, transpose
 from dataflow_analysis import analyze_dataflow
-from utils import GlobalValue, TupleType
+from utils import builtin_functions, GlobalValue, TupleType
 from ast import *
 from x86_ast import *
 from typing import Callable, Set
@@ -27,9 +27,14 @@ class Compiler(compiler.Compiler):
                 return set((arg,))
             case Instr("addq" | "subq" | "cmpq" | "movzbq" | "xorq", args):
                 return set([arg for arg in args if not isinstance(arg, Immediate)])
-            case Callq(_, num_args):
+            case Callq(target, num_args):
                 # TODO: handle spills
-                return set(FUNCTION_REG[0:num_args])
+                return set(FUNCTION_REG[0:num_args]) | (
+                    set([target])
+                    if target not in builtin_functions
+                    and label_name(target) not in builtin_functions
+                    else set()
+                )
             case IndirectCallq(target, num_args) | TailJump(target, num_args):
                 # TODO: handle spills
                 return set([*FUNCTION_REG[0:num_args], target])
@@ -38,7 +43,7 @@ class Compiler(compiler.Compiler):
 
     def write_vars(self, i: instr) -> Set[location]:
         match i:
-            case Instr("addq" | "subq" | "movq" | "xorq" | "movzbq", [_, arg]):
+            case Instr(op, [_, arg]) if op not in ["cmpq"]:
                 return set((arg,))
             case Instr(op, [arg]) if op not in ["negq", "pushq"]:
                 return set((arg,))
@@ -57,7 +62,7 @@ class Compiler(compiler.Compiler):
         def _transfer(label: Label, live_after_block: set) -> set:
             """Transfer function for dataflow analysis.
 
-            Note that live_after is simply khe live_before set for a block which
+            Note that live_after is simply the live_before set for a block which
             this current block jumps to.
             Returns live-before set for the analyzed block.
             Also updates live-before and live-after sets for every instruction.
@@ -130,7 +135,9 @@ class Compiler(compiler.Compiler):
 
                             continue
                         case Callq(func, _) | IndirectCallq(func, _):
-                            if func == "collect":
+                            if (type(instr) is Callq and func == "collect") or type(
+                                instr
+                            ) is not Callq:
                                 # Check for call-live tuple variables
                                 for v in live_after.get((label, instr), []):
                                     match v:
@@ -250,6 +257,7 @@ class Compiler(compiler.Compiler):
                     lambda a: Reg("rax") if isinstance(a, Variable) else a, _def.body
                 )
                 new_defs.append(_def)
+                root_spills[_def.name] = 0
                 continue
 
             (colored, spilled) = self.color_graph(graph)
