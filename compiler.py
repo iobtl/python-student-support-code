@@ -1396,17 +1396,55 @@ class Compiler:
                         need_patch = True
                     case (Immediate(v), Deref(_, _)) if v > 2**16:
                         need_patch = True
+                    case (_, Deref(_, _)) if str(op) == "leaq":
+                        # Destination with leaq needsd to be a register
+                        need_patch = True
+
+                if arg1 == arg2:
+                    return []
 
                 return (
                     [Instr("movq", [arg1, Reg("rax")]), Instr(op, [Reg("rax"), arg2])]
                     if need_patch
                     else [i]
                 )
+            case TailJump(func, arity):
+                match func:
+                    case Reg("rax"):
+                        return [i]
+                    case Reg(v):
+                        return [
+                            Instr("leaq", [func, Reg("rax")]),
+                            TailJump(Reg("rax"), arity),
+                        ]
+                    case _:
+                        raise Exception("Unsupported destination: ", i)
             case _:
                 return [i]
 
     def patch_instrs(self, ss: list[instr]) -> list[instr]:
         return [i for instr in ss for i in self.patch_instr(instr)]
+
+    def patch_instructions(self, p: X86ProgramDefs) -> X86ProgramDefs:
+        """Ensures at most one argument is memory access and remove trivial moves."""
+
+        new_defs = []
+        for _def in p.defs:
+            match _def:
+                case FunctionDef(var, params, body, [], ret):
+                    new_defs.append(
+                        FunctionDef(
+                            var,
+                            params,
+                            {l: self.patch_instrs(ss) for l, ss in body.items()},
+                            [],
+                            ret,
+                        )
+                    )
+                case _:
+                    raise Exception("Unexpected top-level statement: ", _def)
+
+        return X86ProgramDefs(new_defs, p.frame_size, p.root_spills)
 
     ############################################################################
     # Prelude & Conclusion

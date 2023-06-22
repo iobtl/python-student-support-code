@@ -126,7 +126,7 @@ class Compiler(compiler.Compiler):
                                 i_graph.add_edge(arg2, v)
 
                         continue
-                    case Callq(func, _):
+                    case Callq(func, _) | IndirectCallq(func, _):
                         if func == "collect":
                             # Check for call-live tuple variables
                             for v in live_after.get((label, instr), []):
@@ -280,31 +280,6 @@ class Compiler(compiler.Compiler):
         ig = self.build_interference(pseudo_x86, live_after)
 
         return self.allocate_registers(pseudo_x86, ig)
-
-    ###########################################################################
-    # Patch Instructions
-    ###########################################################################
-
-    def patch_instructions(self, p: X86Program) -> X86Program:
-        """Ensures at most one argument is memory access and remove trivial moves."""
-
-        def instr_duplicated(i: instr):
-            match i:
-                case Instr(_, [arg1, arg2]):
-                    return arg1 == arg2
-                case _:
-                    return False
-
-        new_instrs = {
-            l: [
-                instr
-                for instr in self.patch_instrs(block)
-                if not instr_duplicated(instr)
-            ]
-            for l, block in p.body.items()
-        }
-
-        return X86Program(new_instrs, p.frame_size, p.root_spills)
 
     ###########################################################################
     # Prelude & Conclusion
