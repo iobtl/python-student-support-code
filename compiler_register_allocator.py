@@ -107,44 +107,51 @@ class Compiler(compiler.Compiler):
 
     def build_interference(
         self, p: X86ProgramDefs, live_after: dict[tuple[Label, instr], Set[location]]
-    ) -> UndirectedAdjList:
+    ) -> dict[str, UndirectedAdjList]:
+        """Returns an interference graph for every function."""
         var_types = p.var_types
-        i_graph = UndirectedAdjList()
 
-        for label, block in p.blocks.items():
-            for instr in block:
-                match instr:
-                    case Instr("movq" | "movzb", [arg1, arg2]):
-                        # TODO: extract register from Deref instructions?
-                        # PERF: what if `arg2` is assigned to and never used again?
-                        for v in live_after.get((label, instr), []):
-                            if (
-                                isinstance(v, Variable | Reg)
-                                and v != arg1
-                                and v != arg2
-                            ):
-                                i_graph.add_edge(arg2, v)
-
-                        continue
-                    case Callq(func, _) | IndirectCallq(func, _):
-                        if func == "collect":
-                            # Check for call-live tuple variables
+        graphs = {}
+        for _def in p.defs:
+            i_graph = UndirectedAdjList()
+            for label, ss in _def.body.items():
+                for instr in ss:
+                    match instr:
+                        case Instr("movq" | "movzb", [arg1, arg2]):
+                            # TODO: extract register from Deref instructions?
+                            # PERF: what if `arg2` is assigned to and never used again?
                             for v in live_after.get((label, instr), []):
-                                match v:
-                                    case Variable(n) if type(var_types[n]) is TupleType:
-                                        for reg in CALLEE_SAVED_REG:
-                                            i_graph.add_edge(v, reg)
-                                    case _:
-                                        pass
-                    case _:
-                        pass
+                                if (
+                                    isinstance(v, Variable | Reg)
+                                    and v != arg1
+                                    and v != arg2
+                                ):
+                                    i_graph.add_edge(arg2, v)
 
-                for d in self.write_vars(instr):
-                    for v in live_after.get((label, instr), []):
-                        if isinstance(v, Variable | Reg) and d != v:
-                            i_graph.add_edge(d, v)
+                            continue
+                        case Callq(func, _) | IndirectCallq(func, _):
+                            if func == "collect":
+                                # Check for call-live tuple variables
+                                for v in live_after.get((label, instr), []):
+                                    match v:
+                                        case Variable(n) if type(
+                                            var_types[n]
+                                        ) is TupleType:
+                                            for reg in CALLEE_SAVED_REG:
+                                                i_graph.add_edge(v, reg)
+                                        case _:
+                                            pass
+                        case _:
+                            pass
 
-        return i_graph
+                    for d in self.write_vars(instr):
+                        for v in live_after.get((label, instr), []):
+                            if isinstance(v, Variable | Reg) and d != v:
+                                i_graph.add_edge(d, v)
+
+            graphs[_def.name] = i_graph
+
+        return graphs
 
     ############################################################################
     # Allocate Registers
@@ -152,7 +159,8 @@ class Compiler(compiler.Compiler):
 
     # Returns the coloring and the set of spilled variables.
     def color_graph(
-        self, graph: UndirectedAdjList, variables: Set[location]
+        self,
+        graph: UndirectedAdjList,
     ) -> tuple[dict[location, int], Set[location]]:
         saturations = {}
         vertices = set(i for i in graph.vertices() if type(i) is Variable)
@@ -199,182 +207,91 @@ class Compiler(compiler.Compiler):
         return (allocations, spilled)
 
     def allocate_registers(
-        self, p: X86ProgramDefs, graph: UndirectedAdjList
+        self, p: X86ProgramDefs, graphs: dict[str, UndirectedAdjList]
     ) -> X86ProgramDefs:
         def replace_args(
-            mapping: Callable[[arg], location], root_spills: int
-        ) -> X86ProgramDefs:
-            new_defs = []
+            mapping: Callable[[arg], location], instrs: dict[Label, list[instr]]
+        ) -> dict[Label, list[instr]]:
+            new_blocks = {}
 
-            for _def in p.defs:
-                match _def:
-                    case FunctionDef(var, params, blocks, [], ret):
-                        new_instrs = {}
-                        for label, block in blocks.items():
-                            instrs = []
-                            for instr in block:
-                                match instr:
-                                    case Instr(op, args):
-                                        instrs.append(
-                                            Instr(
-                                                op,
-                                                [mapping(a) for a in args],
-                                            )
-                                        )
-                                    case IndirectCallq(func, arity):
-                                        instrs.append(
-                                            IndirectCallq(mapping(func), arity)
-                                        )
-                                    case TailJump(func, arity):
-                                        instrs.append(TailJump(mapping(func), arity))
-                                    case _:
-                                        instrs.append(instr)
+            for label, block in instrs.items():
+                new_instrs = []
+                for instr in block:
+                    match instr:
+                        case Instr(op, args):
+                            new_instrs.append(
+                                Instr(
+                                    op,
+                                    [mapping(a) for a in args],
+                                )
+                            )
+                        case IndirectCallq(func, arity):
+                            new_instrs.append(IndirectCallq(mapping(func), arity))
+                        case TailJump(func, arity):
+                            new_instrs.append(TailJump(mapping(func), arity))
+                        case _:
+                            new_instrs.append(instr)
 
-                            new_instrs[label] = instrs
+                new_blocks[label] = new_instrs
 
-                        new_def = copy.copy(_def)
-                        new_def.body = new_instrs
-                        new_defs.append(new_def)
+            return new_blocks
 
-            num_vars = len(graph.vertices())
-            frame_size = (num_vars + 1) * 8 if num_vars % 2 != 0 else num_vars * 8
-
-            return X86ProgramDefs(new_defs, frame_size, root_spills)
-
-        if graph.num_vertices() == 0:
-            # Only one temporary
-            return replace_args(
-                lambda a: Reg("rax") if isinstance(a, Variable) else a, 0
-            )
-
-        (colored, spilled) = self.color_graph(graph, set())
-        root_spills = 0
-
-        # Map first k colors to the k registers and the remaining to the stack
-        variable_reg_alloc = {v: NUM_REG_ALLOCATION[i] for v, i in colored.items()}
-        # TODO: Spilled vars that don't interfere with each other can be allocated same stack
-        # position?
         var_types = p.var_types
-        for i, spilled_var in enumerate(spilled):
-            match spilled_var:
-                case Variable(v) if isinstance(var_types[v], TupleType):
-                    variable_reg_alloc[spilled_var] = Deref("r15", -i * 8)
-                    root_spills += 1
-                case _:
-                    variable_reg_alloc[spilled_var] = Deref("rbp", -(i + 1) * 8)
+        new_defs = []
+        root_spills = {}
 
-        return replace_args(
-            # TODO: verify
-            lambda a: variable_reg_alloc.get(a, Reg("rax"))
-            if isinstance(a, Variable)
-            else a,
-            root_spills,
-        )
+        for _def in p.defs:
+            def_name = _def.name
+            graph = graphs[def_name]
+
+            if graph.num_vertices() == 0:
+                # Only one temporary
+                _def.body = replace_args(
+                    lambda a: Reg("rax") if isinstance(a, Variable) else a, _def.body
+                )
+                new_defs.append(_def)
+                continue
+
+            (colored, spilled) = self.color_graph(graph)
+
+            # Map first k colors to the k registers and the remaining to the stack
+            variable_reg_alloc = {v: NUM_REG_ALLOCATION[i] for v, i in colored.items()}
+            # TODO: Spilled vars that don't interfere with each other can be allocated same stack
+            # position?
+            root_spill_count = 0
+            for i, spilled_var in enumerate(spilled):
+                match spilled_var:
+                    case Variable(v) if isinstance(var_types[v], TupleType):
+                        variable_reg_alloc[spilled_var] = Deref("r15", -i * 8)
+                        root_spill_count += 1
+                    case _:
+                        variable_reg_alloc[spilled_var] = Deref("rbp", -(i + 1) * 8)
+
+            root_spills[_def.name] = root_spill_count
+
+            _def.body = replace_args(
+                # TODO: verify
+                lambda a: variable_reg_alloc.get(a, Reg("rax"))
+                if isinstance(a, Variable)
+                else a,
+                _def.body,
+            )
+            new_defs.append(_def)
+
+        num_vars = sum(graph.num_vertices() for graph in graphs.values())
+        frame_size = (num_vars + 1) * 8 if num_vars % 2 != 0 else num_vars * 8
+
+        return X86ProgramDefs(new_defs, frame_size, root_spills)
 
     ############################################################################
     # assign Homes
     ############################################################################
 
-    def assign_homes(self, pseudo_x86: X86Program) -> X86Program:
+    def assign_homes(self, pseudo_x86: X86ProgramDefs) -> X86ProgramDefs:
         live_after = self.uncover_live(pseudo_x86)
         ig = self.build_interference(pseudo_x86, live_after)
 
         return self.allocate_registers(pseudo_x86, ig)
-
-    ###########################################################################
-    # Prelude & Conclusion
-    ###########################################################################
-
-    def prelude_and_conclusion(self, p: X86Program) -> X86Program:
-        def align(b: int) -> int:
-            if b % 16 == 0:
-                return b
-            else:
-                return b + 8
-
-        used_callee = set()
-        spilled_offsets = set()
-
-        # Determine which callee-saved registers were used
-        for block in p.body.values():
-            for _instr in block:
-                match _instr:
-                    case Instr(_, args):
-                        for arg in args:
-                            match arg:
-                                case Reg(_):
-                                    # r15 is special register for rootstack
-                                    if arg in CALLEE_SAVED_REG and arg.id != "r15":
-                                        used_callee.add(arg)
-                                case Deref("rbp", offset):
-                                    spilled_offsets.add(offset)
-                                case _:
-                                    continue
-
-        num_callee = len(used_callee)
-        # Procedure call stack and rootstack separate
-        num_spilled = len(spilled_offsets)
-        stack_sub = align(8 * num_spilled + 8 * num_callee) - 8 * num_callee
-
-        # Prelude
-        main_label = label_name("main")
-        main_instrs: list[instr] = [
-            Instr("pushq", [Reg("rbp")]),
-            Instr("movq", [Reg("rsp"), Reg("rbp")]),
-        ]
-
-        new_instrs = {}
-        # Save used callee-saved registers
-        # NOTE: `pushq` also subtracts from `rsp`
-        callee_reg_used = len(used_callee) > 0
-        if callee_reg_used:
-            for reg in used_callee:
-                main_instrs.append(Instr("pushq", [reg]))
-            main_instrs.append(Instr("subq", [Immediate(stack_sub), Reg("rsp")]))
-
-        # Initialize rootstack for GC
-        main_instrs.extend(
-            [
-                Instr("movq", [Immediate(65536), Reg("rdi")]),
-                Instr("movq", [Immediate(16), Reg("rsi")]),
-                Callq("initialize", 2),
-                Instr("movq", [Global("rootstack_begin"), Reg("r15")]),
-            ]
-        )
-
-        for _ in range(p.root_spills):
-            main_instrs.extend(
-                [
-                    # Zero out pointer so GC does not mistake this allocated space
-                    # for the tuple-type variable as uninitialized and attempt to collect i
-                    Instr("movq", [Immediate(0), Deref("r15", 0)]),
-                    # 8 bytes for a pointer to the tuple variable
-                    Instr(
-                        "addq",
-                        [Immediate(8), Reg("r15")],
-                    ),
-                ]
-            )
-
-        # Jump to start
-        main_instrs.append(Jump(label_name("start")))
-        new_instrs[main_label] = main_instrs
-
-        # Conclusion
-        conclusion_label = label_name("conclusion")
-        new_instrs[conclusion_label] = [
-            Instr("subq", [Immediate(8 * p.root_spills), Reg("r15")])
-        ]
-        if callee_reg_used:
-            new_instrs[conclusion_label].append(
-                Instr("addq", [Immediate(stack_sub), Reg("rsp")])
-            )
-            for reg in used_callee:
-                new_instrs[conclusion_label].append(Instr("popq", [reg]))
-        new_instrs[conclusion_label].append(Instr("popq", [Reg("rbp")]))
-        new_instrs[conclusion_label].append(Instr("retq", []))
-
-        return X86Program(new_instrs | p.body, p.frame_size)
 
 
 if __name__ == "__main__":

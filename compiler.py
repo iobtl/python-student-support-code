@@ -1450,15 +1450,117 @@ class Compiler:
     # Prelude & Conclusion
     ############################################################################
 
-    def prelude_and_conclusion(self, p: X86Program) -> X86Program:
-        return X86Program(
-            [
-                Instr("pushq", [Reg("rbp")]),
-                Instr("movq", [Reg("rsp"), Reg("rbp")]),
-                Instr("subq", [Immediate(p.frame_size), Reg("rsp")]),
-                *p.body,
-                Instr("addq", [Immediate(p.frame_size), Reg("rsp")]),
-                Instr("popq", [Reg("rbp")]),
-                Instr("retq", []),
-            ]
-        )
+    def prelude_and_conclusion(self, p: X86ProgramDefs) -> X86ProgramDefs:
+        def align(b: int) -> int:
+            if b % 16 == 0:
+                return b
+            else:
+                return b + 8
+
+        # Generate prelude and conclusion for every function definition
+        new_defs = []
+        for _def in p.defs:
+            match _def:
+                case FunctionDef(var, params, body, [], ret):
+                    used_callee = set()
+                    spilled_offsets = set()
+
+                    num_callee = len(used_callee)
+                    # Procedure call stack and rootstack separate
+                    num_spilled = len(spilled_offsets)
+                    stack_sub = align(8 * num_spilled + 8 * num_callee) - 8 * num_callee
+
+                    # Determine which callee-saved registers were used
+                    for block in body.values():
+                        for _instr in block:
+                            match _instr:
+                                case Instr(_, args):
+                                    for arg in args:
+                                        match arg:
+                                            case Reg(_):
+                                                # r15 is special register for rootstack
+                                                if (
+                                                    arg in CALLEE_SAVED_REG
+                                                    and arg.id != "r15"
+                                                ):
+                                                    used_callee.add(arg)
+                                            case Deref("rbp", offset):
+                                                spilled_offsets.add(offset)
+                                            case _:
+                                                continue
+
+                    # Prelude
+                    prelude_label = label_name(var)
+                    prelude_instrs: list[instr] = [
+                        Instr("pushq", [Reg("rbp")]),
+                        Instr("movq", [Reg("rsp"), Reg("rbp")]),
+                    ]
+
+                    new_instrs: dict = body
+                    # Save used callee-saved registers
+                    # NOTE: `pushq` also subtracts from `rsp`
+                    callee_reg_used = len(used_callee) > 0
+                    if callee_reg_used:
+                        for reg in used_callee:
+                            prelude_instrs.append(Instr("pushq", [reg]))
+
+                    # Adjust stack pointer
+                    # TODO(verify): Necessary to still sub if stack_sub is 0?
+                    # if stack_sub != 0:
+                    prelude_instrs.append(
+                        Instr("subq", [Immediate(stack_sub), Reg("rsp")])
+                    )
+
+                    # Initialize rootstack for GC
+                    if str(var) == "main":
+                        prelude_instrs.extend(
+                            [
+                                Instr("movq", [Immediate(65536), Reg("rdi")]),
+                                Instr("movq", [Immediate(16), Reg("rsi")]),
+                                Callq("initialize", 2),
+                                Instr("movq", [Global("rootstack_begin"), Reg("r15")]),
+                            ]
+                        )
+
+                    root_spills = p.root_spills[str(var)]
+                    for _ in range(root_spills):
+                        prelude_instrs.extend(
+                            [
+                                # Zero out pointer so GC does not mistake this allocated space
+                                # for the tuple-type variable as uninitialized and attempt to collect i
+                                Instr("movq", [Immediate(0), Deref("r15", 0)]),
+                                # 8 bytes for a pointer to the tuple variable
+                                Instr(
+                                    "addq",
+                                    [Immediate(8), Reg("r15")],
+                                ),
+                            ]
+                        )
+
+                    # Jump to start block
+                    prelude_instrs.append(Jump(label_name(f"{var}_start")))
+                    new_instrs[prelude_label] = prelude_instrs
+
+                    # Conclusion
+                    conclusion_label = label_name(f"{var}_conclusion")
+                    conclusion_instrs = []
+                    conclusion_instrs.append(
+                        Instr("subq", [Immediate(8 * root_spills), Reg("r15")])
+                    )
+
+                    if callee_reg_used:
+                        conclusion_instrs.append(
+                            Instr("addq", [Immediate(stack_sub), Reg("rsp")])
+                        )
+                        for reg in used_callee:
+                            conclusion_instrs.append(Instr("popq", [reg]))
+
+                    conclusion_instrs.append(Instr("popq", [Reg("rbp")]))
+                    conclusion_instrs.append(Instr("retq", []))
+                    new_instrs[conclusion_label] = conclusion_instrs
+
+                    new_defs.append(FunctionDef(var, params, new_instrs, [], ret))
+                case _:
+                    raise Exception("Unexpected top-level statement: ", _def)
+
+        return X86ProgramDefs(new_defs, p.frame_size)
